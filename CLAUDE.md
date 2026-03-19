@@ -15,7 +15,7 @@ Data flows one way: Python writes JSONL → Rust reads it. The default data dire
 ### Python (working directory: `python/`)
 
 ```bash
-pip install -e ".[dev,images]"       # Install with all dev + optional deps
+pip install -e ".[dev,images,yaml]"  # Install with all dev + optional deps
 pytest tests/                        # Run all tests
 pytest tests/test_writer.py          # Run a single test file
 pytest tests/ --cov=nuviz --cov-report=term-missing --cov-fail-under=80
@@ -45,23 +45,28 @@ cargo clippy -- -D warnings          # Lint
 - `snapshot.py` — best-effort capture of git hash, pip freeze, GPU info, Python version
 - `image.py` — numpy/torch tensor → PNG conversion (Pillow optional)
 - `types.py` — frozen dataclasses for metric records and alerts
+- `ablation.py` — `Ablation` class: `vary()`, `toggle()`, `generate()` configs, `export()` to YAML/JSON (PyYAML optional)
+- `scene_writer.py` — synchronous writer for per-scene metrics to `scenes.jsonl`
+- `pointcloud.py` — numpy/torch → binary PLY conversion (no extra deps)
 
 ### Rust CLI (`cli/src/`)
 
 Entry: `main.rs` → `cli.rs` (clap derive) → command modules.
 
-- `data/` — JSONL parsing (`metrics.rs`), experiment directory discovery (`experiment.rs`), metadata reading (`meta.rs`)
-- `commands/` — `watch.rs`, `ls.rs`, `leaderboard.rs`
+- `data/` — JSONL parsing with rotation support (`metrics.rs`), experiment discovery (`experiment.rs`), metadata (`meta.rs`), scene records (`scenes.rs`), multi-seed aggregation (`aggregation.rs`), image discovery (`images.rs`), PLY parser with 3DGS support (`ply.rs`)
+- `commands/` — `watch.rs`, `ls.rs`, `leaderboard.rs`, `compare.rs`, `matrix.rs`, `breakdown.rs`, `export.rs`, `image.rs`, `diff.rs`, `view.rs`
 - `tui/` — ratatui app loop (`app.rs`), braille chart renderer (`chart.rs`), dashboard widgets (`widgets.rs`)
 - `watcher/` — `notify`-based file watching (`file_watcher.rs`) + incremental JSONL tail reader (`tail.rs`)
-- `terminal/` — Kitty/Sixel/iTerm2 capability detection (`capability.rs`)
+- `terminal/` — capability detection (`capability.rs`), image rendering with Kitty/Sixel/iTerm2/half-block protocols (`render.rs`), error heatmap generation (`heatmap.rs`)
 
 ### Data Format
 
 Each experiment lives in `<base_dir>/<experiment_name>/`:
 - `metrics.jsonl` — one JSON object per step with timestamp, step number, and metric values
 - `images/<tag>_<step>.png` — rendered images
-- `meta.json` — environment snapshot (git, pip, GPU, config)
+- `meta.json` — environment snapshot (git, pip, GPU, config) with optional `seed` and `config_hash`
+- `scenes.jsonl` — per-scene metrics (separate from step-level data)
+- `pointclouds/<tag>_step_<step>.ply` — binary PLY point cloud files
 
 ## Key Design Decisions
 
@@ -71,3 +76,9 @@ Each experiment lives in `<base_dir>/<experiment_name>/`:
 - Writer uses a daemon thread so it doesn't block training loops
 - Rust reads JSONL lazily: tail-follow for `watch`, seek-to-end for `ls`/`leaderboard`
 - `notify` crate with poll fallback for NFS/WSL compatibility
+- Multi-seed grouping via `config_hash` in meta.json (fallback: strip `_seed\d+` suffix)
+- PyYAML as optional dep (`yaml` extras), same gating pattern as Pillow
+- Image rendering uses protocol priority: Kitty > iTerm2 > Sixel > half-block fallback
+- JSONL rotation at 50MB/500k lines; Rust reader merges `metrics.jsonl` + `metrics.N.jsonl` segments
+- PLY parser handles binary LE + ASCII, supports 3DGS attributes (SH, scale, rotation, opacity)
+- Full design doc (Chinese + English) at `docs/nuviz_design.md` — covers roadmap through Phase 4
