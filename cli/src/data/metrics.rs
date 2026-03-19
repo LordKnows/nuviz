@@ -52,13 +52,11 @@ pub fn read_last_record(path: &Path) -> Option<MetricRecord> {
     let reader = BufReader::new(file);
     let mut last: Option<MetricRecord> = None;
 
-    for line in reader.lines() {
-        if let Ok(line) = line {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                if let Ok(record) = serde_json::from_str::<MetricRecord>(trimmed) {
-                    last = Some(record);
-                }
+    for line in reader.lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            if let Ok(record) = serde_json::from_str::<MetricRecord>(trimmed) {
+                last = Some(record);
             }
         }
     }
@@ -97,7 +95,46 @@ pub fn best_metrics(records: &[MetricRecord]) -> HashMap<String, f64> {
     best
 }
 
-fn is_minimize_metric(name: &str) -> bool {
+/// Alignment mode for multi-experiment comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignMode {
+    /// Align by step number (default)
+    Step,
+    /// Align by wall-clock time relative to first record
+    WallTime,
+}
+
+/// Extract an aligned series for a given metric.
+///
+/// Returns (x_values, y_values) where x depends on the alignment mode.
+pub fn align_series(
+    records: &[MetricRecord],
+    metric: &str,
+    mode: AlignMode,
+) -> (Vec<f64>, Vec<f64>) {
+    let start_time = records.first().map(|r| r.timestamp).unwrap_or(0.0);
+
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+
+    for record in records {
+        if let Some(&value) = record.metrics.get(metric) {
+            if !value.is_finite() {
+                continue;
+            }
+            let x = match mode {
+                AlignMode::Step => record.step as f64,
+                AlignMode::WallTime => record.timestamp - start_time,
+            };
+            xs.push(x);
+            ys.push(value);
+        }
+    }
+
+    (xs, ys)
+}
+
+pub fn is_minimize_metric(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.contains("loss")
         || lower.contains("lpips")

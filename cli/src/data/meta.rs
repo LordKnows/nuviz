@@ -20,6 +20,14 @@ pub struct ExperimentMeta {
     #[serde(default)]
     pub best_metrics: HashMap<String, f64>,
 
+    // Phase 2: multi-seed and ablation fields
+    #[serde(default)]
+    pub seed: Option<u64>,
+    #[serde(default)]
+    pub config_hash: Option<String>,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+
     // Snapshot fields (flattened from Python's snapshot)
     #[serde(default)]
     pub git_hash: Option<String>,
