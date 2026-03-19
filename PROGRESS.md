@@ -1,6 +1,6 @@
-# NuViz Phase 1 Implementation Progress
+# NuViz Implementation Progress
 
-## Plan Overview
+## Phase 1 Overview
 
 Phase 1 delivers the MVP: Python Logger + Rust CLI basics (watch, ls, leaderboard).
 
@@ -49,7 +49,7 @@ Step 10 ────┬─> 11 (data) ──┬─> 12 (ls)
             └─> 17 (terminal caps)              ┘
 ```
 
-## Key Decisions
+## Phase 1 Key Decisions
 
 - Pillow as optional dep for `log.image()`
 - Writer daemon thread with `atexit` flush
@@ -57,3 +57,51 @@ Step 10 ────┬─> 11 (data) ──┬─> 12 (ls)
 - `notify` crate with `--poll` fallback for NFS/WSL
 - Python 3.10+ minimum
 - Zero required deps beyond stdlib + numpy (optional)
+
+---
+
+## Phase 2 Overview
+
+Phase 2 adds ablation experiment workflows and paper-ready output.
+
+## Phase 2A: Python — Ablation & Scene API (Steps 1-3)
+
+- [x] Step 1: `log.scene()` API — per-scene metrics to `scenes.jsonl`
+- [x] Step 2: `Ablation` class — `vary()`, `toggle()`, `generate()`, `export()` with PyYAML optional dep
+- [x] Step 3: Multi-seed metadata — `seed` and `config_hash` fields in Logger + meta.json
+
+## Phase 2B: Rust Data Layer (Steps 4-6)
+
+- [x] Step 4: Scene data parser — `SceneRecord` + `read_scenes()` in `data/scenes.rs`
+- [x] Step 5: Multi-seed aggregation — `group_by_config()`, `AggregatedMetrics`, mean ± std
+- [x] Step 6: Alignment support — `AlignMode::Step` / `AlignMode::WallTime`, `align_series()`
+
+## Phase 2C: Rust Commands (Steps 7-9)
+
+- [x] Step 7: `nuviz compare` — multi-experiment curve overlay TUI with colors, legend, alignment
+- [x] Step 8: `nuviz matrix` — ablation matrix view with `--rows`/`--cols`/`--metric`, key findings
+- [x] Step 9: `nuviz breakdown` — per-scene metrics with `--latex`, `--markdown`, `--diff`
+
+## Phase 2D: Paper Assistance (Steps 10-11)
+
+- [x] Step 10: Enhanced LaTeX/Markdown — bold best (`\textbf{}`), underline 2nd best (`\underline{}`)
+- [x] Step 11: `nuviz export` — raw data dump as CSV or JSON
+
+## Phase 2 Dependency Graph
+
+```
+Step 1 (scene API) ─────────────────────> Step 4 (scene parser) ──> Step 9 (breakdown)
+Step 2 (ablation) ──> Step 3 (seed meta) ──> Step 5 (aggregation) ──> Step 8 (matrix)
+                                                                   ──> Step 10 (latex)
+                                          ──> Step 6 (alignment)  ──> Step 7 (compare)
+                                              Step 11 (export)        [independent]
+```
+
+## Phase 2 Key Decisions
+
+- Scene data in separate `scenes.jsonl` (keeps step-level data clean)
+- Multi-seed grouping via `config_hash` in meta.json (fallback: strip `_seed\d+` suffix)
+- `nuviz table` enhances existing `leaderboard` (no new command)
+- `nuviz export` is a new command (raw time-series vs summary)
+- Compare TUI reuses `BrailleCanvas` with shared canvas, 8-color palette
+- PyYAML as optional dep (`yaml` extras), same pattern as Pillow
