@@ -15,7 +15,9 @@ pub struct TerminalCapabilities {
     pub supports_iterm2: bool,
     pub supports_sixel: bool,
     pub color_depth: ColorDepth,
+    #[allow(dead_code)]
     pub unicode_support: bool,
+    #[allow(dead_code)]
     pub terminal_name: Option<String>,
 }
 

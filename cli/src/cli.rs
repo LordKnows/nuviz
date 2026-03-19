@@ -35,6 +35,15 @@ pub enum Commands {
 
     /// Export experiment data as CSV or JSON
     Export(ExportArgs),
+
+    /// Browse experiment images in terminal
+    Image(ImageArgs),
+
+    /// Visual diff between two experiments
+    Diff(DiffArgs),
+
+    /// Point cloud (PLY) statistics and inspection
+    View(ViewArgs),
 }
 
 #[derive(Parser)]
@@ -172,6 +181,75 @@ pub struct ExportArgs {
     /// Export only specific metric(s)
     #[arg(long)]
     pub metric: Option<Vec<String>>,
+
+    /// Filter by project name
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Parser)]
+pub struct ImageArgs {
+    /// Experiment name
+    pub experiment: String,
+
+    /// Filter by step number
+    #[arg(long)]
+    pub step: Option<u64>,
+
+    /// Filter by image tag (e.g., "render", "depth")
+    #[arg(long)]
+    pub tag: Option<String>,
+
+    /// Show only the most recent image
+    #[arg(long)]
+    pub latest: bool,
+
+    /// Show side-by-side with another tag (e.g., --side-by-side gt)
+    #[arg(long)]
+    pub side_by_side: Option<String>,
+
+    /// Filter by project name
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Parser)]
+pub struct DiffArgs {
+    /// First experiment name
+    pub experiment_a: String,
+
+    /// Second experiment name
+    pub experiment_b: String,
+
+    /// Specific step to compare
+    #[arg(long)]
+    pub step: Option<u64>,
+
+    /// Image tag to compare (default: render)
+    #[arg(long, default_value = "render")]
+    pub tag: String,
+
+    /// Show per-pixel error heatmap
+    #[arg(long)]
+    pub heatmap: bool,
+
+    /// Filter by scene name
+    #[arg(long)]
+    pub scene: Option<String>,
+
+    /// Filter by project name
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Parser)]
+pub struct ViewArgs {
+    /// Path to PLY file, or experiment name to find latest PLY
+    pub path: String,
+
+    /// Show attribute distribution histograms
+    #[arg(long)]
+    pub histogram: bool,
 
     /// Filter by project name
     #[arg(long)]
