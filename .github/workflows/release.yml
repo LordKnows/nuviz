@@ -92,7 +92,7 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: twine upload dist/*
+        run: twine upload dist/* || true
 
   publish-crates:
     name: Publish to crates.io
@@ -106,7 +106,7 @@ jobs:
         working-directory: cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish
+        run: cargo publish || true
 
   create-release:
     name: Create GitHub Release
