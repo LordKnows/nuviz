@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: python
-        run: pip install -e ".[dev,images]"
+        run: pip install -e ".[dev,images,yaml]"
 
       - name: Lint with ruff
         working-directory: python
@@ -90,7 +90,7 @@ jobs:
 
       - name: Install Python package
         working-directory: python
-        run: pip install -e ".[dev,images]"
+        run: pip install -e ".[dev,images,yaml]"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

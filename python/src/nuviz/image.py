@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 
-def _to_numpy(data: Any) -> np.ndarray:
+def _to_numpy(data: Any) -> Any:
     """Convert input to numpy uint8 array.
 
     Accepts:
@@ -65,7 +65,7 @@ def save_image(
         return None
 
 
-def _apply_colormap(data: np.ndarray, cmap: str) -> np.ndarray:
+def _apply_colormap(data: Any, cmap: str) -> Any:
     """Apply a simple colormap to single-channel data."""
     # Normalize to 0-255
     if data.dtype != np.uint8:
@@ -88,10 +88,10 @@ def _apply_colormap(data: np.ndarray, cmap: str) -> np.ndarray:
     return np.stack([data, data, data], axis=-1)
 
 
-def _write_png(data: np.ndarray, path: Path) -> None:
+def _write_png(data: Any, path: Path) -> None:
     """Write image data as PNG using Pillow if available, else raise."""
     try:
-        from PIL import Image  # type: ignore[import-not-found]
+        from PIL import Image
     except ImportError:
         raise ImportError(
             "Pillow is required for image saving. "

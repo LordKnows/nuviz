@@ -1,7 +1,8 @@
 """NuViz — Terminal-native ML training visualization."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
+from nuviz.ablation import Ablation
 from nuviz.logger import Logger
 
-__all__ = ["Logger", "__version__"]
+__all__ = ["Ablation", "Logger", "__version__"]

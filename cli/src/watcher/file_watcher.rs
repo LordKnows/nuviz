@@ -19,16 +19,12 @@ pub fn watch_metrics(
     let (record_tx, record_rx) = mpsc::channel::<Vec<MetricRecord>>();
     let (notify_tx, notify_rx) = mpsc::channel::<notify::Result<notify::Event>>();
 
-    let parent = jsonl_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .to_path_buf();
+    let parent = jsonl_path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
     let path = jsonl_path.to_path_buf();
 
     if use_polling {
-        let config =
-            notify::Config::default().with_poll_interval(Duration::from_secs(1));
+        let config = notify::Config::default().with_poll_interval(Duration::from_secs(1));
         let mut watcher = notify::PollWatcher::new(notify_tx, config)?;
         if parent.exists() {
             watcher.watch(&parent, RecursiveMode::NonRecursive)?;
@@ -60,20 +56,15 @@ fn watch_loop(
 
     // Initial read of existing data
     let records = reader.read_new();
-    if !records.is_empty() {
-        if record_tx.send(records).is_err() {
-            return;
-        }
+    if !records.is_empty() && record_tx.send(records).is_err() {
+        return;
     }
 
     // Process file change events
     loop {
         match notify_rx.recv_timeout(Duration::from_millis(500)) {
             Ok(Ok(event)) => {
-                if matches!(
-                    event.kind,
-                    EventKind::Modify(_) | EventKind::Create(_)
-                ) {
+                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                     read_and_send(&mut reader, &record_tx);
                 }
             }
@@ -87,10 +78,7 @@ fn watch_loop(
     }
 }
 
-fn read_and_send(
-    reader: &mut TailReader,
-    tx: &mpsc::Sender<Vec<MetricRecord>>,
-) {
+fn read_and_send(reader: &mut TailReader, tx: &mpsc::Sender<Vec<MetricRecord>>) {
     let records = reader.read_new();
     if !records.is_empty() {
         let _ = tx.send(records);

@@ -28,10 +28,7 @@ pub fn detect_capabilities() -> TerminalCapabilities {
     let colorterm = env::var("COLORTERM").ok();
     let lang = env::var("LANG").ok();
 
-    let term_program_lower = term_program
-        .as_deref()
-        .unwrap_or("")
-        .to_lowercase();
+    let term_program_lower = term_program.as_deref().unwrap_or("").to_lowercase();
 
     // Kitty graphics protocol
     let supports_kitty = term_program_lower == "kitty"

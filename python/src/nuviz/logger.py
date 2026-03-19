@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sys
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +12,9 @@ from nuviz.anomaly import AnomalyDetector
 from nuviz.config import NuvizConfig
 from nuviz.image import save_image
 from nuviz.naming import resolve_experiment_dir
+from nuviz.scene_writer import SceneWriter
 from nuviz.snapshot import capture_snapshot, write_meta
-from nuviz.types import AlertEvent, ExperimentMeta, MetricRecord
+from nuviz.types import AlertEvent, MetricRecord, SceneRecord
 from nuviz.writer import JsonlWriter
 
 
@@ -45,10 +45,14 @@ class Logger:
         snapshot: bool = True,
         alerts: bool = True,
         config: NuvizConfig | None = None,
+        seed: int | None = None,
+        config_hash: str | None = None,
     ) -> None:
         self._config = config or NuvizConfig.from_env()
         self._name = name
         self._project = project
+        self._seed = seed
+        self._config_hash = config_hash
 
         # Resolve experiment directory
         self._experiment_dir = resolve_experiment_dir(
@@ -63,6 +67,9 @@ class Logger:
             flush_interval=self._config.flush_interval_seconds,
             flush_count=self._config.flush_count,
         )
+
+        # Scene writer (lazy-init on first scene() call)
+        self._scene_writer: SceneWriter | None = None
 
         # Initialize anomaly detector
         self._detector = AnomalyDetector() if alerts and self._config.enable_alerts else None
@@ -108,11 +115,10 @@ class Logger:
             for name, value in metrics.items():
                 if isinstance(value, (int, float)) and not (
                     isinstance(value, float) and (value != value or abs(value) == float("inf"))
-                ):
-                    if name not in self._best_metrics or self._should_update_best(
-                        name, value, self._best_metrics[name]
-                    ):
-                        self._best_metrics[name] = value
+                ) and (name not in self._best_metrics or self._should_update_best(
+                    name, value, self._best_metrics[name]
+                )):
+                    self._best_metrics[name] = value
 
             # Write record
             record = MetricRecord(
@@ -145,6 +151,31 @@ class Logger:
             cmap=cmap,
         )
 
+    def scene(self, scene_name: str, **metrics: float) -> None:
+        """Record per-scene evaluation metrics.
+
+        Writes to scenes.jsonl for per-scene breakdowns (e.g., NeRF per-scene PSNR).
+
+        Args:
+            scene_name: Scene identifier (e.g., "bicycle", "garden").
+            **metrics: Named metric values (e.g., psnr=28.4, ssim=0.92).
+        """
+        if self._finished:
+            return
+
+        try:
+            if self._scene_writer is None:
+                self._scene_writer = SceneWriter(self._experiment_dir / "scenes.jsonl")
+
+            record = SceneRecord(
+                scene=scene_name,
+                metrics=dict(metrics),
+                timestamp=time.time(),
+            )
+            self._scene_writer.write(record)
+        except Exception as e:
+            print(f"[nuviz] Warning: failed to record scene {scene_name}: {e}", file=sys.stderr)
+
     def finish(self) -> None:
         """Finalize the experiment. Flushes all data and writes final metadata."""
         if self._finished:
@@ -153,6 +184,10 @@ class Logger:
 
         # Flush writer
         self._writer.close()
+
+        # Close scene writer
+        if self._scene_writer is not None:
+            self._scene_writer.close()
 
         # Update meta.json with final info
         self._write_final_meta()
@@ -174,6 +209,10 @@ class Logger:
             existing["status"] = "done"
             existing["name"] = self._name or self._experiment_dir.name
             existing["project"] = self._project
+            if self._seed is not None:
+                existing["seed"] = self._seed
+            if self._config_hash is not None:
+                existing["config_hash"] = self._config_hash
 
             with open(meta_path, "w") as f:
                 json.dump(existing, f, indent=2)

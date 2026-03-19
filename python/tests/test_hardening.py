@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 
-import numpy as np
-
+from nuviz.anomaly import AnomalyDetector
 from nuviz.config import NuvizConfig
 from nuviz.logger import Logger
-from nuviz.writer import JsonlWriter
 from nuviz.types import MetricRecord
-from nuviz.anomaly import AnomalyDetector
+from nuviz.writer import JsonlWriter
 
 
 def _make_config(tmp_path: Path, **overrides) -> NuvizConfig:

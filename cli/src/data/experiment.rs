@@ -14,7 +14,12 @@ pub struct Experiment {
     pub total_steps: Option<u64>,
     pub best_metrics: HashMap<String, f64>,
     pub start_time: Option<String>,
+    #[allow(dead_code)]
     pub end_time: Option<String>,
+    #[allow(dead_code)]
+    pub seed: Option<u64>,
+    pub config_hash: Option<String>,
+    pub config: Option<serde_json::Value>,
 }
 
 /// Resolve the base directory for experiments.
@@ -53,11 +58,7 @@ pub fn discover_experiments(base_dir: &Path) -> Vec<Experiment> {
     experiments
 }
 
-fn discover_in_dir(
-    dir: &Path,
-    project: Option<&str>,
-    experiments: &mut Vec<Experiment>,
-) {
+fn discover_in_dir(dir: &Path, project: Option<&str>, experiments: &mut Vec<Experiment>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -126,6 +127,9 @@ fn load_experiment(dir: &Path, project: Option<&str>) -> Experiment {
         best_metrics: best,
         start_time: meta_data.as_ref().and_then(|m| m.start_time.clone()),
         end_time: meta_data.as_ref().and_then(|m| m.end_time.clone()),
+        seed: meta_data.as_ref().and_then(|m| m.seed),
+        config_hash: meta_data.as_ref().and_then(|m| m.config_hash.clone()),
+        config: meta_data.as_ref().and_then(|m| m.config.clone()),
     }
 }
 
@@ -139,6 +143,44 @@ fn compute_steps_and_metrics(dir: &Path) -> (Option<u64>, HashMap<String, f64>) 
     let steps = records.last().map(|r| r.step);
     let best = metrics::best_metrics(&records);
     (steps, best)
+}
+
+/// Group experiments by config_hash for multi-seed aggregation.
+///
+/// Falls back to grouping by name prefix (stripping `_seed\d+` or `_s\d+` suffix).
+/// Returns a map of group_key -> list of experiments.
+pub fn group_by_config(experiments: &[Experiment]) -> HashMap<String, Vec<&Experiment>> {
+    let mut groups: HashMap<String, Vec<&Experiment>> = HashMap::new();
+
+    for exp in experiments {
+        let key = if let Some(ref hash) = exp.config_hash {
+            hash.clone()
+        } else {
+            strip_seed_suffix(&exp.name)
+        };
+        groups.entry(key).or_default().push(exp);
+    }
+
+    groups
+}
+
+/// Strip seed suffix from experiment name for grouping.
+/// Matches patterns like `_seed42`, `_s3`, `_seed0`.
+fn strip_seed_suffix(name: &str) -> String {
+    // Try _seed\d+ first, then _s\d+
+    if let Some(pos) = name.rfind("_seed") {
+        let suffix = &name[pos + 5..];
+        if suffix.chars().all(|c| c.is_ascii_digit()) && !suffix.is_empty() {
+            return name[..pos].to_string();
+        }
+    }
+    if let Some(pos) = name.rfind("_s") {
+        let suffix = &name[pos + 2..];
+        if suffix.chars().all(|c| c.is_ascii_digit()) && !suffix.is_empty() {
+            return name[..pos].to_string();
+        }
+    }
+    name.to_string()
 }
 
 /// Filter experiments by project name.
@@ -180,7 +222,9 @@ mod tests {
         let meta = format!(
             r#"{{"name":"{}","project":{},"status":"done","total_steps":{},"best_metrics":{{"loss":0.01}}}}"#,
             name,
-            project.map(|p| format!(r#""{p}""#)).unwrap_or("null".into()),
+            project
+                .map(|p| format!(r#""{p}""#))
+                .unwrap_or("null".into()),
             steps,
         );
         fs::write(dir.join("meta.json"), meta).unwrap();

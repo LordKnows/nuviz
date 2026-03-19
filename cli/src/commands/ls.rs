@@ -24,7 +24,14 @@ pub fn run(args: LsArgs, base_dir: &Path) -> Result<()> {
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS);
 
-    table.set_header(vec!["Name", "Project", "Status", "Steps", "Best Loss", "Started"]);
+    table.set_header(vec![
+        "Name",
+        "Project",
+        "Status",
+        "Steps",
+        "Best Loss",
+        "Started",
+    ]);
 
     for exp in &experiments {
         let status_cell = match exp.status.as_str() {
@@ -68,6 +75,6 @@ fn sort_experiments(experiments: &mut [Experiment], sort_by: &str) {
     match sort_by {
         "name" => experiments.sort_by(|a, b| a.name.cmp(&b.name)),
         "steps" => experiments.sort_by(|a, b| b.total_steps.cmp(&a.total_steps)),
-        "date" | _ => experiments.sort_by(|a, b| b.start_time.cmp(&a.start_time)),
+        _ => experiments.sort_by(|a, b| b.start_time.cmp(&a.start_time)),
     }
 }

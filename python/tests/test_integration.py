@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
-import time
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +26,9 @@ class TestFullTrainingLoop:
         """Simulate a realistic 100-step training loop."""
         config = _make_config(tmp_path)
 
-        with Logger("integration-test", project="test_project", config=config, snapshot=False) as log:
+        with Logger(
+            "integration-test", project="test_project", config=config, snapshot=False
+        ) as log:
             for step in range(100):
                 loss = 1.0 * (0.97 ** step) + 0.01 * np.random.randn()
                 psnr = 20.0 + 10.0 * (1 - 0.97 ** step)

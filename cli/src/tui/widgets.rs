@@ -18,7 +18,9 @@ pub struct BrailleChart<'a> {
 impl<'a> BrailleChart<'a> {
     pub fn render_to_paragraph(&self, area: Rect) -> Paragraph<'a> {
         let border_style = if self.focused {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };
@@ -55,7 +57,9 @@ impl<'a> BrailleChart<'a> {
 /// Render an info panel showing experiment status.
 pub fn info_panel<'a>(app: &App, focused: bool) -> Paragraph<'a> {
     let border_style = if focused {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -70,7 +74,9 @@ pub fn info_panel<'a>(app: &App, focused: bool) -> Paragraph<'a> {
     for exp_name in &app.experiment_names {
         lines.push(Line::from(Span::styled(
             format!("Experiment: {exp_name}"),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )));
 
         if let Some(step) = app.current_step(exp_name) {

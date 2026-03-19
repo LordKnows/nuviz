@@ -20,18 +20,32 @@ pub struct ExperimentMeta {
     #[serde(default)]
     pub best_metrics: HashMap<String, f64>,
 
-    // Snapshot fields (flattened from Python's snapshot)
+    // Phase 2: multi-seed and ablation fields
     #[serde(default)]
+    pub seed: Option<u64>,
+    #[serde(default)]
+    pub config_hash: Option<String>,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+
+    // Snapshot fields (flattened from Python's snapshot) — used in Phase 3+ commands
+    #[serde(default)]
+    #[allow(dead_code)]
     pub git_hash: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub git_dirty: Option<bool>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub hostname: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub gpu_model: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub python_version: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub pytorch_version: Option<String>,
 }
 

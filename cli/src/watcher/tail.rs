@@ -22,10 +22,9 @@ impl TailReader {
     }
 
     /// Create a TailReader starting from the end of the current file.
+    #[allow(dead_code)]
     pub fn from_end(path: &Path) -> Self {
-        let position = std::fs::metadata(path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let position = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         Self {
             path: path.to_path_buf(),
             position,
@@ -52,10 +51,8 @@ impl TailReader {
         }
 
         let mut reader = BufReader::new(file);
-        if self.position > 0 {
-            if reader.seek(SeekFrom::Start(self.position)).is_err() {
-                return Vec::new();
-            }
+        if self.position > 0 && reader.seek(SeekFrom::Start(self.position)).is_err() {
+            return Vec::new();
         }
 
         let mut records = Vec::new();
@@ -95,7 +92,11 @@ mod tests {
         // Write initial data
         {
             let mut f = File::create(&path).unwrap();
-            writeln!(f, r#"{{"step":0,"timestamp":1.0,"metrics":{{"loss":1.0}}}}"#).unwrap();
+            writeln!(
+                f,
+                r#"{{"step":0,"timestamp":1.0,"metrics":{{"loss":1.0}}}}"#
+            )
+            .unwrap();
         }
 
         let mut reader = TailReader::new(&path);
@@ -109,9 +110,20 @@ mod tests {
 
         // Append more data
         {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-            writeln!(f, r#"{{"step":1,"timestamp":2.0,"metrics":{{"loss":0.5}}}}"#).unwrap();
-            writeln!(f, r#"{{"step":2,"timestamp":3.0,"metrics":{{"loss":0.3}}}}"#).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(
+                f,
+                r#"{{"step":1,"timestamp":2.0,"metrics":{{"loss":0.5}}}}"#
+            )
+            .unwrap();
+            writeln!(
+                f,
+                r#"{{"step":2,"timestamp":3.0,"metrics":{{"loss":0.3}}}}"#
+            )
+            .unwrap();
         }
 
         let records = reader.read_new();
@@ -127,7 +139,11 @@ mod tests {
 
         {
             let mut f = File::create(&path).unwrap();
-            writeln!(f, r#"{{"step":0,"timestamp":1.0,"metrics":{{"loss":1.0}}}}"#).unwrap();
+            writeln!(
+                f,
+                r#"{{"step":0,"timestamp":1.0,"metrics":{{"loss":1.0}}}}"#
+            )
+            .unwrap();
         }
 
         let mut reader = TailReader::from_end(&path);
@@ -136,8 +152,15 @@ mod tests {
 
         // Append new data
         {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-            writeln!(f, r#"{{"step":1,"timestamp":2.0,"metrics":{{"loss":0.5}}}}"#).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(
+                f,
+                r#"{{"step":1,"timestamp":2.0,"metrics":{{"loss":0.5}}}}"#
+            )
+            .unwrap();
         }
 
         let records = reader.read_new();
@@ -159,8 +182,16 @@ mod tests {
 
         {
             let mut f = File::create(&path).unwrap();
-            writeln!(f, r#"{{"step":0,"timestamp":1.0,"metrics":{{"loss":1.0}}}}"#).unwrap();
-            writeln!(f, r#"{{"step":1,"timestamp":2.0,"metrics":{{"loss":0.5}}}}"#).unwrap();
+            writeln!(
+                f,
+                r#"{{"step":0,"timestamp":1.0,"metrics":{{"loss":1.0}}}}"#
+            )
+            .unwrap();
+            writeln!(
+                f,
+                r#"{{"step":1,"timestamp":2.0,"metrics":{{"loss":0.5}}}}"#
+            )
+            .unwrap();
         }
 
         let mut reader = TailReader::new(&path);
@@ -169,8 +200,15 @@ mod tests {
         // Truncate file (simulate rotation)
         File::create(&path).unwrap();
         {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-            writeln!(f, r#"{{"step":0,"timestamp":3.0,"metrics":{{"loss":0.9}}}}"#).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(
+                f,
+                r#"{{"step":0,"timestamp":3.0,"metrics":{{"loss":0.9}}}}"#
+            )
+            .unwrap();
         }
 
         let records = reader.read_new();
@@ -185,9 +223,17 @@ mod tests {
 
         {
             let mut f = File::create(&path).unwrap();
-            writeln!(f, r#"{{"step":0,"timestamp":1.0,"metrics":{{"loss":1.0}}}}"#).unwrap();
+            writeln!(
+                f,
+                r#"{{"step":0,"timestamp":1.0,"metrics":{{"loss":1.0}}}}"#
+            )
+            .unwrap();
             writeln!(f, "this is garbage").unwrap();
-            writeln!(f, r#"{{"step":2,"timestamp":3.0,"metrics":{{"loss":0.3}}}}"#).unwrap();
+            writeln!(
+                f,
+                r#"{{"step":2,"timestamp":3.0,"metrics":{{"loss":0.3}}}}"#
+            )
+            .unwrap();
         }
 
         let mut reader = TailReader::new(&path);
