@@ -51,6 +51,15 @@ class EnvironmentSnapshot:
 
 
 @dataclass(slots=True, frozen=True)
+class SceneRecord:
+    """A per-scene metrics observation (e.g., per-scene PSNR for NeRF evaluation)."""
+
+    scene: str
+    metrics: dict[str, float]
+    timestamp: float
+
+
+@dataclass(slots=True, frozen=True)
 class ExperimentMeta:
     """Metadata for an experiment, written to meta.json."""
 
@@ -61,3 +70,5 @@ class ExperimentMeta:
     total_steps: int | None = None
     best_metrics: dict[str, float] = field(default_factory=dict)
     status: str = "running"
+    seed: int | None = None
+    config_hash: str | None = None
