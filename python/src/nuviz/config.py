@@ -18,6 +18,8 @@ class NuvizConfig:
     enable_snapshot: bool = True
     rotate_max_size_bytes: int = 50_000_000  # 50 MB
     rotate_max_lines: int = 500_000
+    enable_gpu: bool = True
+    gpu_poll_interval: float = 5.0
 
     @staticmethod
     def from_env() -> NuvizConfig:
@@ -38,5 +40,9 @@ class NuvizConfig:
             ),
             rotate_max_lines=int(
                 os.environ.get("NUVIZ_ROTATE_LINES", "500000")
+            ),
+            enable_gpu=os.environ.get("NUVIZ_GPU", "1") != "0",
+            gpu_poll_interval=float(
+                os.environ.get("NUVIZ_GPU_POLL", "5.0")
             ),
         )
