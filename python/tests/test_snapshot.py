@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from nuviz.snapshot import capture_snapshot, write_meta, _run_command
+from nuviz.snapshot import _run_command, capture_snapshot, write_meta
 
 
 class TestRunCommand:

@@ -111,6 +111,7 @@ impl App {
     }
 
     /// Estimate ETA based on step rate.
+    #[allow(dead_code)]
     pub fn eta_seconds(&self, experiment: &str, total_steps: u64) -> Option<f64> {
         let records = self.records.get(experiment)?;
         if records.len() < 2 {

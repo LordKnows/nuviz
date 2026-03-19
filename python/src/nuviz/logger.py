@@ -115,11 +115,10 @@ class Logger:
             for name, value in metrics.items():
                 if isinstance(value, (int, float)) and not (
                     isinstance(value, float) and (value != value or abs(value) == float("inf"))
-                ):
-                    if name not in self._best_metrics or self._should_update_best(
-                        name, value, self._best_metrics[name]
-                    ):
-                        self._best_metrics[name] = value
+                ) and (name not in self._best_metrics or self._should_update_best(
+                    name, value, self._best_metrics[name]
+                )):
+                    self._best_metrics[name] = value
 
             # Write record
             record = MetricRecord(

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 from nuviz.anomaly import AnomalyDetector
 from nuviz.types import AlertType
 

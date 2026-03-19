@@ -22,6 +22,7 @@ impl TailReader {
     }
 
     /// Create a TailReader starting from the end of the current file.
+    #[allow(dead_code)]
     pub fn from_end(path: &Path) -> Self {
         let position = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         Self {

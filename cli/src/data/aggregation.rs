@@ -4,6 +4,7 @@ use crate::data::experiment::Experiment;
 
 /// Aggregated metrics across multiple experiment runs (mean +/- std).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AggregatedMetrics {
     pub mean: HashMap<String, f64>,
     pub std: HashMap<String, f64>,
@@ -11,6 +12,7 @@ pub struct AggregatedMetrics {
 }
 
 /// Compute mean and standard deviation of best_metrics across experiments.
+#[allow(dead_code)]
 pub fn aggregate_experiments(experiments: &[&Experiment]) -> AggregatedMetrics {
     let n = experiments.len();
     if n == 0 {

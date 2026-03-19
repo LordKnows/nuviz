@@ -11,6 +11,7 @@ pub struct MetricRecord {
     pub timestamp: f64,
     pub metrics: HashMap<String, f64>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub gpu: Option<HashMap<String, f64>>,
 }
 
@@ -47,6 +48,7 @@ pub fn read_metrics(path: &Path) -> Vec<MetricRecord> {
 }
 
 /// Read only the last record from a JSONL file (efficient for large files).
+#[allow(dead_code)]
 pub fn read_last_record(path: &Path) -> Option<MetricRecord> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);

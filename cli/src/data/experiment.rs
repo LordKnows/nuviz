@@ -14,7 +14,9 @@ pub struct Experiment {
     pub total_steps: Option<u64>,
     pub best_metrics: HashMap<String, f64>,
     pub start_time: Option<String>,
+    #[allow(dead_code)]
     pub end_time: Option<String>,
+    #[allow(dead_code)]
     pub seed: Option<u64>,
     pub config_hash: Option<String>,
     pub config: Option<serde_json::Value>,
