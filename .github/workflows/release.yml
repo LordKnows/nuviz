@@ -25,10 +25,10 @@ jobs:
             artifact: nuviz-linux-aarch64
             use_cross: true
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             artifact: nuviz-macos-x86_64
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-latest
             artifact: nuviz-macos-aarch64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
