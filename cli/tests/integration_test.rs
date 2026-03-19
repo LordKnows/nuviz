@@ -86,7 +86,12 @@ log.finish()
 
     let content = fs::read_to_string(&jsonl_path).unwrap();
     let lines: Vec<&str> = content.trim().split('\n').collect();
-    assert_eq!(lines.len(), 50, "Expected 50 JSONL lines, got {}", lines.len());
+    assert_eq!(
+        lines.len(),
+        50,
+        "Expected 50 JSONL lines, got {}",
+        lines.len()
+    );
 
     // Parse each line as the Rust MetricRecord
     for (i, line) in lines.iter().enumerate() {
@@ -96,16 +101,31 @@ log.finish()
         let step = record["step"].as_u64().unwrap();
         assert_eq!(step, i as u64, "Step mismatch at line {i}");
 
-        assert!(record["timestamp"].is_f64(), "Missing timestamp at line {i}");
+        assert!(
+            record["timestamp"].is_f64(),
+            "Missing timestamp at line {i}"
+        );
 
         let metrics = record["metrics"].as_object().unwrap();
-        assert!(metrics.contains_key("loss"), "Missing 'loss' at step {step}");
-        assert!(metrics.contains_key("psnr"), "Missing 'psnr' at step {step}");
-        assert!(metrics.contains_key("ssim"), "Missing 'ssim' at step {step}");
+        assert!(
+            metrics.contains_key("loss"),
+            "Missing 'loss' at step {step}"
+        );
+        assert!(
+            metrics.contains_key("psnr"),
+            "Missing 'psnr' at step {step}"
+        );
+        assert!(
+            metrics.contains_key("ssim"),
+            "Missing 'ssim' at step {step}"
+        );
 
         // Verify loss is decreasing
         let loss = metrics["loss"].as_f64().unwrap();
-        assert!(loss > 0.0 && loss <= 1.0, "Unexpected loss={loss} at step {step}");
+        assert!(
+            loss > 0.0 && loss <= 1.0,
+            "Unexpected loss={loss} at step {step}"
+        );
     }
 
     // Parse meta.json
@@ -123,10 +143,16 @@ log.finish()
     // Verify best_metrics
     let best = meta["best_metrics"].as_object().unwrap();
     let best_loss = best["loss"].as_f64().unwrap();
-    assert!(best_loss < 0.03, "Best loss should be ~0.02, got {best_loss}");
+    assert!(
+        best_loss < 0.03,
+        "Best loss should be ~0.02, got {best_loss}"
+    );
 
     let best_psnr = best["psnr"].as_f64().unwrap();
-    assert!(best_psnr > 29.0, "Best psnr should be ~29.8, got {best_psnr}");
+    assert!(
+        best_psnr > 29.0,
+        "Best psnr should be ~29.8, got {best_psnr}"
+    );
 }
 
 #[test]
@@ -282,8 +308,14 @@ log.finish()
         "nuviz ls failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("cli-test"), "Output should contain experiment name:\n{stdout}");
-    assert!(stdout.contains("done"), "Output should show 'done' status:\n{stdout}");
+    assert!(
+        stdout.contains("cli-test"),
+        "Output should contain experiment name:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("done"),
+        "Output should show 'done' status:\n{stdout}"
+    );
 }
 
 #[test]
@@ -323,7 +355,14 @@ log2.finish()
     // Run nuviz leaderboard
     let output = Command::new(env!("CARGO"))
         .args([
-            "run", "--quiet", "--", "leaderboard", "--dir", base_dir, "--sort", "loss",
+            "run",
+            "--quiet",
+            "--",
+            "leaderboard",
+            "--dir",
+            base_dir,
+            "--sort",
+            "loss",
         ])
         .output()
         .expect("failed to run nuviz leaderboard");
@@ -334,11 +373,20 @@ log2.finish()
         "nuviz leaderboard failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("good-exp"), "Output should contain good-exp:\n{stdout}");
-    assert!(stdout.contains("bad-exp"), "Output should contain bad-exp:\n{stdout}");
+    assert!(
+        stdout.contains("good-exp"),
+        "Output should contain good-exp:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("bad-exp"),
+        "Output should contain bad-exp:\n{stdout}"
+    );
 
     // Verify good-exp is ranked higher (appears first)
     let good_pos = stdout.find("good-exp").unwrap();
     let bad_pos = stdout.find("bad-exp").unwrap();
-    assert!(good_pos < bad_pos, "good-exp should be ranked higher than bad-exp");
+    assert!(
+        good_pos < bad_pos,
+        "good-exp should be ranked higher than bad-exp"
+    );
 }

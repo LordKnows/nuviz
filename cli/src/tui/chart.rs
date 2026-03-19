@@ -10,7 +10,7 @@
 ///   0x04   0x20    row 2
 ///   0x40   0x80    row 3
 /// ```
-
+///
 /// Dot bit positions for braille encoding: [col][row]
 const BRAILLE_DOTS: [[u8; 4]; 2] = [
     [0x01, 0x02, 0x04, 0x40], // left column
@@ -105,12 +105,7 @@ impl BrailleCanvas {
 /// Plot a data series as a braille line chart.
 ///
 /// Returns rendered lines with Y-axis labels prepended.
-pub fn plot_series(
-    data: &[f64],
-    width: usize,
-    height: usize,
-    label: &str,
-) -> Vec<String> {
+pub fn plot_series(data: &[f64], width: usize, height: usize, label: &str) -> Vec<String> {
     if data.is_empty() || width == 0 || height == 0 {
         return vec![format!("{label}: (no data)")];
     }
@@ -185,7 +180,7 @@ pub fn plot_series(
 }
 
 /// Format a number compactly for axis labels.
-fn format_number(v: f64) -> String {
+pub fn format_number(v: f64) -> String {
     let abs = v.abs();
     if abs == 0.0 {
         "0".into()

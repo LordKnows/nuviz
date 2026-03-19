@@ -101,9 +101,7 @@ impl App {
         }
 
         let lower = metric.to_lowercase();
-        let minimize = lower.contains("loss")
-            || lower.contains("lpips")
-            || lower.contains("error");
+        let minimize = lower.contains("loss") || lower.contains("lpips") || lower.contains("error");
 
         if minimize {
             series.into_iter().reduce(f64::min)
@@ -158,10 +156,7 @@ mod tests {
         MetricRecord {
             step,
             timestamp: step as f64 * 1.0,
-            metrics: HashMap::from([
-                ("loss".into(), loss),
-                ("psnr".into(), psnr),
-            ]),
+            metrics: HashMap::from([("loss".into(), loss), ("psnr".into(), psnr)]),
             gpu: None,
         }
     }
@@ -179,11 +174,14 @@ mod tests {
     #[test]
     fn test_metric_series() {
         let mut app = App::new(vec!["exp".into()]);
-        app.push_records("exp", vec![
-            make_record(0, 1.0, 20.0),
-            make_record(1, 0.5, 25.0),
-            make_record(2, 0.3, 28.0),
-        ]);
+        app.push_records(
+            "exp",
+            vec![
+                make_record(0, 1.0, 20.0),
+                make_record(1, 0.5, 25.0),
+                make_record(2, 0.3, 28.0),
+            ],
+        );
 
         let loss = app.metric_series("exp", "loss");
         assert_eq!(loss, vec![1.0, 0.5, 0.3]);
@@ -195,16 +193,19 @@ mod tests {
     #[test]
     fn test_metric_series_filters_nan() {
         let mut app = App::new(vec!["exp".into()]);
-        app.push_records("exp", vec![
-            make_record(0, 1.0, 20.0),
-            MetricRecord {
-                step: 1,
-                timestamp: 1.0,
-                metrics: HashMap::from([("loss".into(), f64::NAN)]),
-                gpu: None,
-            },
-            make_record(2, 0.5, 25.0),
-        ]);
+        app.push_records(
+            "exp",
+            vec![
+                make_record(0, 1.0, 20.0),
+                MetricRecord {
+                    step: 1,
+                    timestamp: 1.0,
+                    metrics: HashMap::from([("loss".into(), f64::NAN)]),
+                    gpu: None,
+                },
+                make_record(2, 0.5, 25.0),
+            ],
+        );
 
         let loss = app.metric_series("exp", "loss");
         assert_eq!(loss, vec![1.0, 0.5]);
@@ -213,52 +214,61 @@ mod tests {
     #[test]
     fn test_best_metric_loss_minimized() {
         let mut app = App::new(vec!["exp".into()]);
-        app.push_records("exp", vec![
-            make_record(0, 1.0, 20.0),
-            make_record(1, 0.3, 28.0),
-            make_record(2, 0.5, 25.0),
-        ]);
+        app.push_records(
+            "exp",
+            vec![
+                make_record(0, 1.0, 20.0),
+                make_record(1, 0.3, 28.0),
+                make_record(2, 0.5, 25.0),
+            ],
+        );
         assert_eq!(app.best_metric("exp", "loss"), Some(0.3));
     }
 
     #[test]
     fn test_best_metric_psnr_maximized() {
         let mut app = App::new(vec!["exp".into()]);
-        app.push_records("exp", vec![
-            make_record(0, 1.0, 20.0),
-            make_record(1, 0.3, 28.0),
-            make_record(2, 0.5, 25.0),
-        ]);
+        app.push_records(
+            "exp",
+            vec![
+                make_record(0, 1.0, 20.0),
+                make_record(1, 0.3, 28.0),
+                make_record(2, 0.5, 25.0),
+            ],
+        );
         assert_eq!(app.best_metric("exp", "psnr"), Some(28.0));
     }
 
     #[test]
     fn test_current_step() {
         let mut app = App::new(vec!["exp".into()]);
-        app.push_records("exp", vec![
-            make_record(0, 1.0, 20.0),
-            make_record(99, 0.1, 30.0),
-        ]);
+        app.push_records(
+            "exp",
+            vec![make_record(0, 1.0, 20.0), make_record(99, 0.1, 30.0)],
+        );
         assert_eq!(app.current_step("exp"), Some(99));
     }
 
     #[test]
     fn test_eta_seconds() {
         let mut app = App::new(vec!["exp".into()]);
-        app.push_records("exp", vec![
-            MetricRecord {
-                step: 0,
-                timestamp: 0.0,
-                metrics: HashMap::from([("loss".into(), 1.0)]),
-                gpu: None,
-            },
-            MetricRecord {
-                step: 100,
-                timestamp: 100.0,
-                metrics: HashMap::from([("loss".into(), 0.5)]),
-                gpu: None,
-            },
-        ]);
+        app.push_records(
+            "exp",
+            vec![
+                MetricRecord {
+                    step: 0,
+                    timestamp: 0.0,
+                    metrics: HashMap::from([("loss".into(), 1.0)]),
+                    gpu: None,
+                },
+                MetricRecord {
+                    step: 100,
+                    timestamp: 100.0,
+                    metrics: HashMap::from([("loss".into(), 0.5)]),
+                    gpu: None,
+                },
+            ],
+        );
 
         let eta = app.eta_seconds("exp", 200).unwrap();
         assert!((eta - 100.0).abs() < 1.0);

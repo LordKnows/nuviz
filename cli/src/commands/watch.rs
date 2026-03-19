@@ -141,10 +141,7 @@ fn run_event_loop(
     }
 }
 
-fn resolve_experiments(
-    args: &WatchArgs,
-    base_dir: &Path,
-) -> Result<Vec<std::path::PathBuf>> {
+fn resolve_experiments(args: &WatchArgs, base_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     if !args.experiments.is_empty() {
         // Explicit experiment names
         let mut dirs = Vec::new();
