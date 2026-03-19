@@ -25,14 +25,23 @@ pub fn run(args: LeaderboardArgs, base_dir: &Path) -> Result<()> {
         .collect();
 
     // Determine sort metric
-    let sort_metric = args.sort.clone().unwrap_or_else(|| {
-        metric_names.iter().next().cloned().unwrap_or_default()
-    });
+    let sort_metric = args
+        .sort
+        .clone()
+        .unwrap_or_else(|| metric_names.iter().next().cloned().unwrap_or_default());
 
     // Sort experiments by the chosen metric
     experiments.sort_by(|a, b| {
-        let va = a.best_metrics.get(&sort_metric).copied().unwrap_or(f64::NAN);
-        let vb = b.best_metrics.get(&sort_metric).copied().unwrap_or(f64::NAN);
+        let va = a
+            .best_metrics
+            .get(&sort_metric)
+            .copied()
+            .unwrap_or(f64::NAN);
+        let vb = b
+            .best_metrics
+            .get(&sort_metric)
+            .copied()
+            .unwrap_or(f64::NAN);
 
         if is_minimize_metric(&sort_metric) ^ args.asc {
             // minimize + desc => sort ascending (best=lowest first)
@@ -50,10 +59,18 @@ pub fn run(args: LeaderboardArgs, base_dir: &Path) -> Result<()> {
 
     // Find best value for each metric (for highlighting)
     let best_per_metric = find_best_per_metric(&experiments, &metric_names);
+    let second_best_per_metric =
+        find_second_best_per_metric(&experiments, &metric_names, &best_per_metric);
 
     match args.format.as_str() {
-        "markdown" => print_markdown(&experiments, &metric_names, &sort_metric),
-        "latex" => print_latex(&experiments, &metric_names, &sort_metric),
+        "markdown" => print_markdown(&experiments, &metric_names, &sort_metric, &best_per_metric),
+        "latex" => print_latex(
+            &experiments,
+            &metric_names,
+            &sort_metric,
+            &best_per_metric,
+            &second_best_per_metric,
+        ),
         "csv" => print_csv(&experiments, &metric_names),
         _ => print_table(&experiments, &metric_names, &best_per_metric, &sort_metric),
     }
@@ -74,7 +91,11 @@ fn print_table(
 
     let mut header = vec!["Rank".to_string(), "Experiment".to_string()];
     for name in metric_names {
-        let arrow = if is_minimize_metric(name) { " ↓" } else { " ↑" };
+        let arrow = if is_minimize_metric(name) {
+            " ↓"
+        } else {
+            " ↑"
+        };
         let marker = if name == sort_metric { " *" } else { "" };
         header.push(format!("{name}{arrow}{marker}"));
     }
@@ -82,10 +103,7 @@ fn print_table(
     table.set_header(header);
 
     for (i, exp) in experiments.iter().enumerate() {
-        let mut row = vec![
-            Cell::new(i + 1),
-            Cell::new(&exp.name),
-        ];
+        let mut row = vec![Cell::new(i + 1), Cell::new(&exp.name)];
 
         for name in metric_names {
             let cell = match exp.best_metrics.get(name) {
@@ -119,12 +137,17 @@ fn print_markdown(
     experiments: &[Experiment],
     metric_names: &BTreeSet<String>,
     _sort_metric: &str,
+    best_per_metric: &std::collections::HashMap<String, f64>,
 ) {
     // Header
     let mut header = vec!["Rank".to_string(), "Experiment".to_string()];
     let mut separator = vec!["---".to_string(), "---".to_string()];
     for name in metric_names {
-        let arrow = if is_minimize_metric(name) { " ↓" } else { " ↑" };
+        let arrow = if is_minimize_metric(name) {
+            " ↓"
+        } else {
+            " ↑"
+        };
         header.push(format!("{name}{arrow}"));
         separator.push("---".to_string());
     }
@@ -138,7 +161,14 @@ fn print_markdown(
         let mut row = vec![format!("{}", i + 1), exp.name.clone()];
         for name in metric_names {
             match exp.best_metrics.get(name) {
-                Some(v) => row.push(format!("{v:.4}")),
+                Some(&v) => {
+                    let formatted = format!("{v:.4}");
+                    if best_per_metric.get(name).copied() == Some(v) {
+                        row.push(format!("**{formatted}**"));
+                    } else {
+                        row.push(formatted);
+                    }
+                }
                 None => row.push("-".into()),
             }
         }
@@ -151,6 +181,8 @@ fn print_latex(
     experiments: &[Experiment],
     metric_names: &BTreeSet<String>,
     _sort_metric: &str,
+    best_per_metric: &std::collections::HashMap<String, f64>,
+    second_best_per_metric: &std::collections::HashMap<String, f64>,
 ) {
     let cols = "l".to_string() + &"c".repeat(metric_names.len() + 1);
     println!("\\begin{{table}}[t]");
@@ -176,7 +208,16 @@ fn print_latex(
         let mut row = vec![exp.name.replace('_', "\\_")];
         for name in metric_names {
             match exp.best_metrics.get(name) {
-                Some(v) => row.push(format!("{v:.4}")),
+                Some(&v) => {
+                    let formatted = format!("{v:.4}");
+                    if best_per_metric.get(name).copied() == Some(v) {
+                        row.push(format!("\\textbf{{{formatted}}}"));
+                    } else if second_best_per_metric.get(name).copied() == Some(v) {
+                        row.push(format!("\\underline{{{formatted}}}"));
+                    } else {
+                        row.push(formatted);
+                    }
+                }
                 None => row.push("-".into()),
             }
         }
@@ -228,7 +269,11 @@ fn find_best_per_metric(
                 let is_better = match best_val {
                     None => true,
                     Some(current) => {
-                        if minimize { v < current } else { v > current }
+                        if minimize {
+                            v < current
+                        } else {
+                            v > current
+                        }
                     }
                 };
                 if is_better {
@@ -243,6 +288,50 @@ fn find_best_per_metric(
     }
 
     best
+}
+
+fn find_second_best_per_metric(
+    experiments: &[Experiment],
+    metric_names: &BTreeSet<String>,
+    best_per_metric: &std::collections::HashMap<String, f64>,
+) -> std::collections::HashMap<String, f64> {
+    let mut second = std::collections::HashMap::new();
+
+    for name in metric_names {
+        let minimize = is_minimize_metric(name);
+        let best_val = best_per_metric.get(name).copied();
+        let mut second_val: Option<f64> = None;
+
+        for exp in experiments {
+            if let Some(&v) = exp.best_metrics.get(name) {
+                if v.is_nan() || v.is_infinite() {
+                    continue;
+                }
+                if Some(v) == best_val {
+                    continue;
+                }
+                let is_better = match second_val {
+                    None => true,
+                    Some(current) => {
+                        if minimize {
+                            v < current
+                        } else {
+                            v > current
+                        }
+                    }
+                };
+                if is_better {
+                    second_val = Some(v);
+                }
+            }
+        }
+
+        if let Some(v) = second_val {
+            second.insert(name.clone(), v);
+        }
+    }
+
+    second
 }
 
 fn is_minimize_metric(name: &str) -> bool {
