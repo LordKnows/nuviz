@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 
-def _to_numpy_float32(data: Any) -> np.ndarray | None:
+def _to_numpy_float32(data: Any) -> Any:
     """Convert input to numpy float32 array, handling torch tensors."""
     if data is None:
         return None
@@ -101,9 +101,9 @@ def save_pointcloud(
 
 def _write_binary_ply(
     path: Path,
-    xyz: np.ndarray,
-    colors: np.ndarray | None,
-    opacities: np.ndarray | None,
+    xyz: Any,
+    colors: Any,
+    opacities: Any,
 ) -> None:
     """Write a binary little-endian PLY file."""
     num_points = xyz.shape[0]
