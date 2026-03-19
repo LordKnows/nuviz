@@ -86,6 +86,7 @@ mod tests {
             seed: None,
             config_hash: None,
             config: None,
+            tags: Vec::new(),
         }
     }
 

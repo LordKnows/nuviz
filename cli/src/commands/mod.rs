@@ -1,4 +1,5 @@
 pub mod breakdown;
+pub mod cleanup;
 pub mod compare;
 pub mod diff;
 pub mod export;
@@ -6,5 +7,7 @@ pub mod image;
 pub mod leaderboard;
 pub mod ls;
 pub mod matrix;
+pub mod reproduce;
+pub mod tag;
 pub mod view;
 pub mod watch;
