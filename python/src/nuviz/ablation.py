@@ -65,7 +65,7 @@ class Ablation:
     def _load_yaml(path: Path) -> dict[str, Any]:
         """Load a YAML file. Requires PyYAML."""
         try:
-            import yaml  # type: ignore[import-untyped]
+            import yaml
         except ImportError:
             msg = (
                 "PyYAML is required to load YAML config files. "
@@ -160,7 +160,7 @@ class Ablation:
             ImportError: If PyYAML is not installed.
         """
         try:
-            import yaml  # type: ignore[import-untyped]
+            import yaml
         except ImportError:
             msg = (
                 "PyYAML is required to export YAML config files. "

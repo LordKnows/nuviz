@@ -58,7 +58,7 @@ def capture_snapshot() -> EnvironmentSnapshot:
     # PyTorch version (dynamic import)
     pytorch_version: str | None = None
     try:
-        import torch  # type: ignore[import-not-found]
+        import torch
         pytorch_version = torch.__version__
     except ImportError:
         pass
