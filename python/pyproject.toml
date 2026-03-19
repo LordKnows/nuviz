@@ -24,6 +24,7 @@ classifiers = [
 
 [project.optional-dependencies]
 images = ["Pillow>=9.0"]
+yaml = ["PyYAML>=6.0"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
