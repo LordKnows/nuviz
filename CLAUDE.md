@@ -38,9 +38,10 @@ cargo clippy -- -D warnings          # Lint
 ### Python Logger (`python/src/nuviz/`)
 
 `Logger` is the public entry point — it orchestrates all other modules:
-- `config.py` — `NuvizConfig` frozen dataclass, env var overrides (`NUVIZ_DIR`, `NUVIZ_FLUSH_INTERVAL`, etc.)
+- `config.py` — `NuvizConfig` frozen dataclass, env var overrides (`NUVIZ_DIR`, `NUVIZ_FLUSH_INTERVAL`, `NUVIZ_GPU`, etc.)
 - `naming.py` — experiment name sanitization, timestamp fallback
 - `writer.py` — background daemon thread writing JSONL with deque + lock, time/count-based flushing, `atexit` hook
+- `gpu.py` — `GpuCollector` daemon thread polling nvidia-smi (graceful fallback when unavailable)
 - `anomaly.py` — NaN/Inf detection + Welford's online algorithm for 3-sigma spike alerts
 - `snapshot.py` — best-effort capture of git hash, pip freeze, GPU info, Python version
 - `image.py` — numpy/torch tensor → PNG conversion (Pillow optional)
@@ -54,7 +55,7 @@ cargo clippy -- -D warnings          # Lint
 Entry: `main.rs` → `cli.rs` (clap derive) → command modules.
 
 - `data/` — JSONL parsing with rotation support (`metrics.rs`), experiment discovery (`experiment.rs`), metadata (`meta.rs`), scene records (`scenes.rs`), multi-seed aggregation (`aggregation.rs`), image discovery (`images.rs`), PLY parser with 3DGS support (`ply.rs`)
-- `commands/` — `watch.rs`, `ls.rs`, `leaderboard.rs`, `compare.rs`, `matrix.rs`, `breakdown.rs`, `export.rs`, `image.rs`, `diff.rs`, `view.rs`
+- `commands/` — `watch.rs`, `ls.rs`, `leaderboard.rs`, `compare.rs`, `matrix.rs`, `breakdown.rs`, `export.rs`, `image.rs`, `diff.rs`, `view.rs`, `tag.rs`, `cleanup.rs`, `reproduce.rs`
 - `tui/` — ratatui app loop (`app.rs`), braille chart renderer (`chart.rs`), dashboard widgets (`widgets.rs`)
 - `watcher/` — `notify`-based file watching (`file_watcher.rs`) + incremental JSONL tail reader (`tail.rs`)
 - `terminal/` — capability detection (`capability.rs`), image rendering with Kitty/Sixel/iTerm2/half-block protocols (`render.rs`), error heatmap generation (`heatmap.rs`)
@@ -81,4 +82,7 @@ Each experiment lives in `<base_dir>/<experiment_name>/`:
 - Image rendering uses protocol priority: Kitty > iTerm2 > Sixel > half-block fallback
 - JSONL rotation at 50MB/500k lines; Rust reader merges `metrics.jsonl` + `metrics.N.jsonl` segments
 - PLY parser handles binary LE + ASCII, supports 3DGS attributes (SH, scale, rotation, opacity)
+- GPU metrics collected automatically via nvidia-smi polling; graceful no-op on CPU-only machines
+- `update_tags()` patches meta.json via `serde_json::Value` to avoid clobbering Python-written fields
+- `cleanup --force` required for actual deletion; default mode is dry-run with size estimates
 - Full design doc (Chinese + English) at `docs/nuviz_design.md` — covers roadmap through Phase 4

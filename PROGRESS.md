@@ -180,3 +180,65 @@ Step 16 (config) ──> Step 15 (rotation) ──> Step 17 (multi-JSONL reader)
 - JSONL rotation: rename-and-shift strategy (metrics.jsonl → metrics.1.jsonl → metrics.2.jsonl)
 - Rotation check per-record (not per-batch) to respect limits precisely
 - `nuviz view` computes stats eagerly (streaming pass planned for 500MB+ files)
+
+---
+
+## Phase 4 Overview
+
+Phase 4 is polish and open-source readiness: experiment management commands, GPU metrics, CI/CD, documentation, and packaging.
+
+## Phase 4A: Experiment Management Commands — Rust (Steps 1-7)
+
+- [x] Step 1: Add `tags` field to `ExperimentMeta` + `Serialize` derive, `update_tags()` atomic write
+- [x] Step 2: Propagate `tags` to `Experiment` struct
+- [x] Step 3: `nuviz tag` command — add/remove/list tags on experiments
+- [x] Step 4: `nuviz cleanup` command — rank by metric, dry-run default, `--force` to delete
+- [x] Step 5: `nuviz reproduce` command — print reproduction guide from meta.json
+- [x] Step 6: Wire commands into `cli.rs` / `mod.rs` / `main.rs`
+- [x] Step 7: Unit tests for new commands and meta functions
+
+## Phase 4B: GPU Metrics Auto-Collection — Python (Steps 8-12)
+
+- [x] Step 8: `gpu.py` — `GpuCollector` daemon thread polling nvidia-smi CSV output
+- [x] Step 9: Config: `enable_gpu`, `gpu_poll_interval`, `NUVIZ_GPU` / `NUVIZ_GPU_POLL` env vars
+- [x] Step 10: Logger integration — GpuCollector in `__init__`, `latest()` in `step()`, `stop()` in `finish()`
+- [x] Step 11: Writer verification — gpu field serialized when present, stripped when None
+- [x] Step 12: 20 tests covering polling, fallback, thread safety, Logger integration
+
+## Phase 4C: CI/CD & Packaging (Steps 13-17)
+
+- [x] Step 13: MIT LICENSE file
+- [x] Step 14: `.github/workflows/release.yml` — multi-platform builds (Linux/macOS/Windows), PyPI + crates.io publish, GitHub Release
+- [x] Step 15: CI enhancement — Python 3.13 in matrix, pip caching
+- [x] Step 16: Cargo.toml metadata (description, license, repository, keywords, categories)
+- [x] Step 17: pyproject.toml updates (version 0.3.0, URLs, Beta classifier, PyPI README)
+
+## Phase 4D: Documentation (Steps 18-21)
+
+- [x] Step 18: `python/README.md` — PyPI-specific README
+- [x] Step 19: Root `README.md` rewrite — badges, comparison table, install, usage, architecture diagram
+- [x] Step 20: `docs/USAGE.md` — full command reference and Python API docs
+- [x] Step 21: `CONTRIBUTING.md` — development setup, code style, PR process
+
+## Phase 4F: Final Integration (Steps 22-24)
+
+- [x] Step 22: Version alignment — Python 0.3.0, Rust 0.3.0
+- [x] Step 23: Update `PROGRESS.md` with Phase 4
+- [x] Step 24: Update `CLAUDE.md` with new architecture
+
+## Phase 4 Dependency Graph
+
+```
+4A (Rust commands)  ──────────────────┐
+4B (GPU metrics)    ──parallel──────  ├──> 4F (Final integration)
+4C (CI/CD)          ──────────────────┤
+4D (Docs — depends on 4A+4B+4C)  ────┘
+```
+
+## Phase 4 Key Decisions
+
+- `update_tags()` uses `serde_json::Value` (not ExperimentMeta) to avoid clobbering Python-written fields
+- `cleanup --force` required for deletion; default is dry-run with size estimates
+- GPU collection gracefully falls back to None when nvidia-smi unavailable
+- Release workflow uses `cross` for Linux aarch64, native runners for macOS ARM
+- Version bumped to 0.3.0 across Python and Rust
