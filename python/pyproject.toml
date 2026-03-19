@@ -4,16 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nuviz"
-version = "0.1.0"
+version = "0.3.0"
 description = "Terminal-native ML training visualization"
-readme = {text = "Terminal-native ML training visualization", content-type = "text/plain"}
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
     { name = "Zhongyuan" },
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Programming Language :: Python :: 3.10",
@@ -21,6 +21,12 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
+
+[project.urls]
+Homepage = "https://github.com/LordKnows/nuviz"
+Repository = "https://github.com/LordKnows/nuviz"
+Issues = "https://github.com/LordKnows/nuviz/issues"
+Documentation = "https://github.com/LordKnows/nuviz/blob/main/docs/USAGE.md"
 
 [project.optional-dependencies]
 images = ["Pillow>=9.0"]

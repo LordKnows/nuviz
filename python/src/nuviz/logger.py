@@ -10,6 +10,7 @@ from typing import Any
 
 from nuviz.anomaly import AnomalyDetector
 from nuviz.config import NuvizConfig
+from nuviz.gpu import GpuCollector
 from nuviz.image import save_image
 from nuviz.naming import resolve_experiment_dir
 from nuviz.pointcloud import save_pointcloud
@@ -74,6 +75,13 @@ class Logger:
         # Scene writer (lazy-init on first scene() call)
         self._scene_writer: SceneWriter | None = None
 
+        # Initialize GPU collector
+        self._gpu_collector: GpuCollector | None = None
+        if self._config.enable_gpu:
+            self._gpu_collector = GpuCollector(
+                poll_interval=self._config.gpu_poll_interval,
+            )
+
         # Initialize anomaly detector
         self._detector = AnomalyDetector() if alerts and self._config.enable_alerts else None
 
@@ -123,11 +131,15 @@ class Logger:
                 )):
                     self._best_metrics[name] = value
 
+            # Collect GPU metrics
+            gpu = self._gpu_collector.latest() if self._gpu_collector else None
+
             # Write record
             record = MetricRecord(
                 step=step,
                 timestamp=time.time(),
                 metrics=dict(metrics),
+                gpu=gpu,
             )
             self._writer.write(record)
             self._current_step = step
@@ -211,6 +223,10 @@ class Logger:
         if self._finished:
             return
         self._finished = True
+
+        # Stop GPU collector
+        if self._gpu_collector is not None:
+            self._gpu_collector.stop()
 
         # Flush writer
         self._writer.close()

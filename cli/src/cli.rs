@@ -44,6 +44,15 @@ pub enum Commands {
 
     /// Point cloud (PLY) statistics and inspection
     View(ViewArgs),
+
+    /// Tag experiments for organization
+    Tag(TagArgs),
+
+    /// Clean up low-value experiments
+    Cleanup(CleanupArgs),
+
+    /// Print reproduction guide for an experiment
+    Reproduce(ReproduceArgs),
 }
 
 #[derive(Parser)]
@@ -254,4 +263,46 @@ pub struct ViewArgs {
     /// Filter by project name
     #[arg(long)]
     pub project: Option<String>,
+}
+
+#[derive(Parser)]
+pub struct TagArgs {
+    /// Experiment name
+    pub experiment: String,
+
+    /// Tag to add
+    pub tag: Option<String>,
+
+    /// Remove a tag
+    #[arg(long)]
+    pub remove: Option<String>,
+
+    /// List all tags
+    #[arg(long)]
+    pub list: bool,
+}
+
+#[derive(Parser)]
+pub struct CleanupArgs {
+    /// Filter by project name
+    #[arg(long)]
+    pub project: Option<String>,
+
+    /// Keep top N experiments by metric (default: 5)
+    #[arg(long)]
+    pub keep_top: Option<usize>,
+
+    /// Metric to rank by (default: loss)
+    #[arg(long)]
+    pub metric: Option<String>,
+
+    /// Actually delete (default is dry-run)
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Parser)]
+pub struct ReproduceArgs {
+    /// Experiment name
+    pub experiment: String,
 }

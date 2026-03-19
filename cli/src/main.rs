@@ -26,5 +26,8 @@ fn main() -> Result<()> {
         Commands::Image(args) => commands::image::run(args, &base_dir),
         Commands::Diff(args) => commands::diff::run(args, &base_dir),
         Commands::View(args) => commands::view::run(args, &base_dir),
+        Commands::Tag(args) => commands::tag::run(args, &base_dir),
+        Commands::Cleanup(args) => commands::cleanup::run(args, &base_dir),
+        Commands::Reproduce(args) => commands::reproduce::run(args, &base_dir),
     }
 }

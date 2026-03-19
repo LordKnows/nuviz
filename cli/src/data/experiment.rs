@@ -20,6 +20,8 @@ pub struct Experiment {
     pub seed: Option<u64>,
     pub config_hash: Option<String>,
     pub config: Option<serde_json::Value>,
+    #[allow(dead_code)]
+    pub tags: Vec<String>,
 }
 
 /// Resolve the base directory for experiments.
@@ -130,6 +132,10 @@ fn load_experiment(dir: &Path, project: Option<&str>) -> Experiment {
         seed: meta_data.as_ref().and_then(|m| m.seed),
         config_hash: meta_data.as_ref().and_then(|m| m.config_hash.clone()),
         config: meta_data.as_ref().and_then(|m| m.config.clone()),
+        tags: meta_data
+            .as_ref()
+            .map(|m| m.tags.clone())
+            .unwrap_or_default(),
     }
 }
 
