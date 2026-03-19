@@ -105,3 +105,78 @@ Step 2 (ablation) ──> Step 3 (seed meta) ──> Step 5 (aggregation) ──
 - `nuviz export` is a new command (raw time-series vs summary)
 - Compare TUI reuses `BrailleCanvas` with shared canvas, 8-color palette
 - PyYAML as optional dep (`yaml` extras), same pattern as Pillow
+
+---
+
+## Phase 3 Overview
+
+Phase 3 adds visualization enhancement: terminal image browsing, visual diff, point cloud support, and JSONL rotation.
+
+## Phase 3A: Terminal Image Rendering (Steps 1-3)
+
+- [x] Step 1: Add `image` + `base64` crates to Cargo.toml
+- [x] Step 2: Image rendering backend (`terminal/render.rs`) — Kitty, iTerm2, Sixel, half-block
+- [x] Step 3: Image file discovery (`data/images.rs`) — parse `step_NNNNNN_<tag>.png`
+
+## Phase 3B: `nuviz image` Command (Steps 4-5)
+
+- [x] Step 4: CLI args for `nuviz image` (--step, --tag, --latest, --side-by-side)
+- [x] Step 5: Command implementation with arrow-key navigation
+
+## Phase 3C: `nuviz diff` Command (Steps 6-8)
+
+- [x] Step 6: CLI args for `nuviz diff` (--heatmap, --scene)
+- [x] Step 7: Error heatmap generation (`terminal/heatmap.rs`) — turbo colormap, PSNR/MAE
+- [x] Step 8: Diff command with side-by-side + heatmap modes
+
+## Phase 3D: Python Pointcloud API (Steps 9-11)
+
+- [x] Step 9: `PointcloudRecord` frozen dataclass in types.py
+- [x] Step 10: PLY writer module (`pointcloud.py`) — numpy/torch → binary PLY
+- [x] Step 11: `Logger.pointcloud()` method
+
+## Phase 3E: PLY Parser & `nuviz view` (Steps 12-14)
+
+- [x] Step 12: PLY parser (`data/ply.rs`) — binary LE + ASCII, 3DGS attributes
+- [x] Step 13: CLI args for `nuviz view` (--histogram)
+- [x] Step 14: `nuviz view` command — stats table, attribute histograms
+
+## Phase 3F: JSONL Rotation (Steps 15-17)
+
+- [x] Step 15: Python rotation logic in writer.py (size + line limits)
+- [x] Step 16: Rotation config fields + env vars in NuvizConfig
+- [x] Step 17: Rust multi-file JSONL reader + tail rotation detection
+
+## Phase 3G: Tests (Steps 18-22)
+
+- [x] Step 18: Python pointcloud tests (test_pointcloud.py)
+- [x] Step 19: Python rotation tests (test_rotation.py)
+- [x] Step 20: Rust PLY parser unit tests (inline in ply.rs)
+- [x] Step 21: Rust image discovery + multi-JSONL tests (inline)
+- [x] Step 22: Integration tests verified
+
+## Phase 3H: CI (Step 23)
+
+- [x] Step 23: CI picks up all new tests, no structural changes needed
+
+## Phase 3 Dependency Graph
+
+```
+Step 1 (deps) ──┬──> Step 2 (render) ──┬──> Step 5 (image cmd)
+                │                       └──> Step 8 (diff cmd)
+                ├──> Step 7 (heatmap) ─────> Step 8
+                └──> Step 12 (PLY parser) ──> Step 14 (view cmd)
+
+Step 3 (image discovery) ──> Step 5, Step 8
+Step 9 (type) ──> Step 10 (PLY writer) ──> Step 11 (Logger)
+Step 16 (config) ──> Step 15 (rotation) ──> Step 17 (multi-JSONL reader)
+```
+
+## Phase 3 Key Decisions
+
+- Image rendering priority: Kitty > iTerm2 > Sixel > half-block (ANSI 24-bit color)
+- PLY parser in-house (no `ply-rs` dep) for full 3DGS attribute control
+- Sixel uses 216-color (6×6×6) uniform quantization
+- JSONL rotation: rename-and-shift strategy (metrics.jsonl → metrics.1.jsonl → metrics.2.jsonl)
+- Rotation check per-record (not per-batch) to respect limits precisely
+- `nuviz view` computes stats eagerly (streaming pass planned for 500MB+ files)

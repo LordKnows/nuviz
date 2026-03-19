@@ -1,2 +1,3 @@
-#[allow(dead_code)]
 pub mod capability;
+pub mod heatmap;
+pub mod render;

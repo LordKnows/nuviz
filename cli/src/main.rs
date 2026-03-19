@@ -23,5 +23,8 @@ fn main() -> Result<()> {
         Commands::Matrix(args) => commands::matrix::run(args, &base_dir),
         Commands::Breakdown(args) => commands::breakdown::run(args, &base_dir),
         Commands::Export(args) => commands::export::run(args, &base_dir),
+        Commands::Image(args) => commands::image::run(args, &base_dir),
+        Commands::Diff(args) => commands::diff::run(args, &base_dir),
+        Commands::View(args) => commands::view::run(args, &base_dir),
     }
 }

@@ -15,8 +15,28 @@ pub struct MetricRecord {
     pub gpu: Option<HashMap<String, f64>>,
 }
 
-/// Read all metric records from a JSONL file, skipping malformed lines.
+/// Read all metric records from a JSONL file and its rotated segments.
+///
+/// When rotation is in effect, files are named `metrics.jsonl`, `metrics.1.jsonl`,
+/// `metrics.2.jsonl`, etc. Higher-numbered files contain older data.
+/// Records are returned in chronological order (oldest first).
 pub fn read_metrics(path: &Path) -> Vec<MetricRecord> {
+    let mut all_records = Vec::new();
+
+    // Find rotated segments (oldest first)
+    let segments = find_rotated_segments(path);
+    for seg_path in segments.iter().rev() {
+        all_records.extend(read_single_jsonl(seg_path));
+    }
+
+    // Read the main file (newest data)
+    all_records.extend(read_single_jsonl(path));
+
+    all_records
+}
+
+/// Read records from a single JSONL file, skipping malformed lines.
+fn read_single_jsonl(path: &Path) -> Vec<MetricRecord> {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return Vec::new(),
@@ -45,6 +65,51 @@ pub fn read_metrics(path: &Path) -> Vec<MetricRecord> {
     }
 
     records
+}
+
+/// Find rotated JSONL segments (e.g., metrics.1.jsonl, metrics.2.jsonl).
+/// Returns paths sorted by number ascending (1, 2, 3, ...).
+fn find_rotated_segments(main_path: &Path) -> Vec<std::path::PathBuf> {
+    let parent = match main_path.parent() {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+
+    let stem = main_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("metrics");
+    let ext = main_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("jsonl");
+
+    let mut segments: Vec<(u32, std::path::PathBuf)> = Vec::new();
+
+    let entries = match std::fs::read_dir(parent) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Match pattern: stem.N.ext (e.g., metrics.1.jsonl)
+        let prefix = format!("{stem}.");
+        let suffix = format!(".{ext}");
+
+        if let Some(stripped) = name_str.strip_prefix(&prefix) {
+            if let Some(num_str) = stripped.strip_suffix(&suffix) {
+                if let Ok(num) = num_str.parse::<u32>() {
+                    segments.push((num, entry.path()));
+                }
+            }
+        }
+    }
+
+    segments.sort_by_key(|(n, _)| *n);
+    segments.into_iter().map(|(_, p)| p).collect()
 }
 
 /// Read only the last record from a JSONL file (efficient for large files).
