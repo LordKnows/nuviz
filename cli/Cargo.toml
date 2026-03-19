@@ -1,6 +1,6 @@
 [package]
 name = "nuviz-cli"
-version = "0.3.0"
+version = "0.1.0"
 edition = "2021"
 description = "Terminal-native ML training visualization CLI"
 license = "MIT"
