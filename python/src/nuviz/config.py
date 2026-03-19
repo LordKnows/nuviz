@@ -16,6 +16,8 @@ class NuvizConfig:
     flush_count: int = 50
     enable_alerts: bool = True
     enable_snapshot: bool = True
+    rotate_max_size_bytes: int = 50_000_000  # 50 MB
+    rotate_max_lines: int = 500_000
 
     @staticmethod
     def from_env() -> NuvizConfig:
@@ -31,4 +33,10 @@ class NuvizConfig:
             flush_count=int(os.environ.get("NUVIZ_FLUSH_COUNT", "50")),
             enable_alerts=os.environ.get("NUVIZ_ALERTS", "1") != "0",
             enable_snapshot=os.environ.get("NUVIZ_SNAPSHOT", "1") != "0",
+            rotate_max_size_bytes=int(
+                os.environ.get("NUVIZ_ROTATE_SIZE", "50000000")
+            ),
+            rotate_max_lines=int(
+                os.environ.get("NUVIZ_ROTATE_LINES", "500000")
+            ),
         )

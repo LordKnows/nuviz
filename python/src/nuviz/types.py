@@ -60,6 +60,17 @@ class SceneRecord:
 
 
 @dataclass(slots=True, frozen=True)
+class PointcloudRecord:
+    """A saved point cloud file reference."""
+
+    tag: str
+    step: int
+    path: str
+    num_points: int
+    timestamp: float
+
+
+@dataclass(slots=True, frozen=True)
 class ExperimentMeta:
     """Metadata for an experiment, written to meta.json."""
 

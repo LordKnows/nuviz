@@ -12,6 +12,7 @@ from nuviz.anomaly import AnomalyDetector
 from nuviz.config import NuvizConfig
 from nuviz.image import save_image
 from nuviz.naming import resolve_experiment_dir
+from nuviz.pointcloud import save_pointcloud
 from nuviz.scene_writer import SceneWriter
 from nuviz.snapshot import capture_snapshot, write_meta
 from nuviz.types import AlertEvent, MetricRecord, SceneRecord
@@ -66,6 +67,8 @@ class Logger:
             path=self._experiment_dir / "metrics.jsonl",
             flush_interval=self._config.flush_interval_seconds,
             flush_count=self._config.flush_count,
+            max_file_size_bytes=self._config.rotate_max_size_bytes,
+            max_file_lines=self._config.rotate_max_lines,
         )
 
         # Scene writer (lazy-init on first scene() call)
@@ -149,6 +152,33 @@ class Logger:
             step=self._current_step,
             experiment_dir=self._experiment_dir,
             cmap=cmap,
+        )
+
+    def pointcloud(
+        self,
+        tag: str,
+        xyz: Any,
+        colors: Any | None = None,
+        opacities: Any | None = None,
+    ) -> None:
+        """Save a point cloud for the current step.
+
+        Args:
+            tag: Identifier (e.g., "gaussians", "points").
+            xyz: Positions array of shape (N, 3).
+            colors: Optional RGB colors, shape (N, 3). Float [0,1] or uint8.
+            opacities: Optional opacity values, shape (N,). Float.
+        """
+        if self._finished:
+            return
+
+        save_pointcloud(
+            tag=tag,
+            step=self._current_step,
+            xyz=xyz,
+            experiment_dir=self._experiment_dir,
+            colors=colors,
+            opacities=opacities,
         )
 
     def scene(self, scene_name: str, **metrics: float) -> None:
