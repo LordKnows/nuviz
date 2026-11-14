@@ -155,3 +155,40 @@ class TestLoggerProject:
 
         assert "gaussian_splatting" in str(log.experiment_dir)
         log.finish()
+
+
+class TestMetricCoercion:
+    def test_numpy_and_tensor_like_metrics(self, tmp_path: Path) -> None:
+        np = __import__("pytest").importorskip("numpy")
+
+        class FakeTensor:
+            """Mimics a 0-dim torch tensor."""
+
+            def item(self) -> float:
+                return 0.25
+
+        config = NuvizConfig(
+            base_dir=tmp_path, enable_snapshot=False, enable_gpu=False, flush_interval_seconds=0.05
+        )
+        with Logger("coerce", config=config, snapshot=False) as log:
+            log.step(0, loss=np.float32(0.5), acc=np.float64(0.9), n=np.int64(3))
+            log.step(1, loss=FakeTensor(), acc=np.array(0.95), n=4)
+
+        lines = (log.experiment_dir / "metrics.jsonl").read_text().splitlines()
+        assert [json.loads(line)["metrics"] for line in lines] == [
+            {"loss": 0.5, "acc": 0.9, "n": 3},
+            {"loss": 0.25, "acc": 0.95, "n": 4},
+        ]
+        meta = json.loads((log.experiment_dir / "meta.json").read_text())
+        assert meta["best_metrics"]["loss"] == 0.25
+        assert meta["best_metrics"]["acc"] == 0.95
+
+    def test_non_numeric_metric_is_skipped_not_fatal(self, tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        config = NuvizConfig(base_dir=tmp_path, enable_snapshot=False, enable_gpu=False)
+        with Logger("bad-metric", config=config, snapshot=False) as log:
+            log.step(0, loss=0.5, note="hello")  # type: ignore[arg-type]
+            log.step(1, loss=0.4, note="again")  # type: ignore[arg-type]
+
+        lines = (log.experiment_dir / "metrics.jsonl").read_text().splitlines()
+        assert [json.loads(line)["metrics"] for line in lines] == [{"loss": 0.5}, {"loss": 0.4}]
+        assert capsys.readouterr().err.count("metric 'note' ignored") == 1

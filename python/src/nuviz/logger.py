@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nuviz._util import is_finite, to_number, warn
 from nuviz.anomaly import AnomalyDetector
 from nuviz.config import NuvizConfig
 from nuviz.gpu import GpuCollector
@@ -90,6 +91,7 @@ class Logger:
         self._best_metrics: dict[str, float] = {}
         self._finished = False
         self._alerts: list[AlertEvent] = []
+        self._bad_metrics: set[str] = set()
 
         # Capture environment snapshot
         if snapshot and self._config.enable_snapshot:
@@ -115,20 +117,21 @@ class Logger:
             return
 
         try:
+            values = self._coerce_metrics(metrics)
+
             # Anomaly detection
             if self._detector:
-                alerts = self._detector.check(step, metrics)
+                alerts = self._detector.check(step, values)
                 for alert in alerts:
                     self._alerts.append(alert)
                     print(f"[nuviz] ⚠ {alert.message}", file=sys.stderr)
 
             # Track best metrics
-            for name, value in metrics.items():
-                if isinstance(value, (int, float)) and not (
-                    isinstance(value, float) and (value != value or abs(value) == float("inf"))
-                ) and (name not in self._best_metrics or self._should_update_best(
-                    name, value, self._best_metrics[name]
-                )):
+            for name, value in values.items():
+                if is_finite(value) and (
+                    name not in self._best_metrics
+                    or self._should_update_best(name, value, self._best_metrics[name])
+                ):
                     self._best_metrics[name] = value
 
             # Collect GPU metrics
@@ -136,16 +139,32 @@ class Logger:
 
             # Write record
             record = MetricRecord(
-                step=step,
+                step=int(step),
                 timestamp=time.time(),
-                metrics=dict(metrics),
+                metrics=values,
                 gpu=gpu,
             )
             self._writer.write(record)
-            self._current_step = step
+            self._current_step = int(step)
 
         except Exception as e:
             print(f"[nuviz] Warning: failed to record step {step}: {e}", file=sys.stderr)
+
+    def _coerce_metrics(self, metrics: dict[str, Any]) -> dict[str, float]:
+        """Convert metric values to plain numbers on the caller's thread.
+
+        Accepts Python numbers, numpy scalars and 0-dim tensors. Values that
+        are not scalar numbers are skipped with a one-time warning per metric.
+        """
+        values: dict[str, float] = {}
+        for name, value in metrics.items():
+            try:
+                values[name] = to_number(value)
+            except TypeError as e:
+                if name not in self._bad_metrics:
+                    self._bad_metrics.add(name)
+                    warn(f"metric '{name}' ignored: {e}")
+        return values
 
     def image(self, name: str, data: Any, cmap: str | None = None) -> None:
         """Save an image for the current step.
