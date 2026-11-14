@@ -1,251 +1,349 @@
 # NuViz Usage Guide
 
-## Python Logger API
+- [Python logger](#python-logger)
+- [wandb-style API](#wandb-style-api)
+- [Framework integrations](#framework-integrations)
+- [CLI commands](#cli-commands)
+- [Configuration](#configuration)
+- [Data format](FORMAT.md)
 
-### Logger
+## Python logger
 
 ```python
 from nuviz import Logger
 
 log = Logger(
-    name="exp-001",           # Experiment name (auto-generated if None)
-    project="my_project",     # Optional project grouping
-    seed=42,                  # Optional seed for multi-seed grouping
-    config_hash="abc123",     # Optional hash for ablation grouping
-    snapshot=True,            # Capture environment info
-    alerts=True,              # Enable anomaly detection
+    name="exp-001",              # Defaults to a UTC timestamp
+    project="my_project",        # Optional grouping (a parent directory)
+    hparams={"lr": 1e-3, "sh": 2},   # dict, argparse.Namespace or dataclass
+    seed=42,                     # Recorded for multi-seed aggregation
+    max_steps=30_000,            # Lets `nuviz watch` show progress and ETA
+    tags=["baseline"],
+    snapshot=True,               # Capture git / packages / GPU in the background
+    alerts=True,                 # NaN/Inf and spike detection
 )
 ```
 
-#### `log.step(step, **metrics)`
+If `exp-001` already exists the run is stored as `exp-001_1` (then `_2`, …)
+and a notice is printed; `log.name` is the name actually used.
 
-Record metrics for a training step. Metrics are buffered and flushed in the background.
+`import nuviz` has no third-party dependencies. numpy and Pillow are needed
+only for `log.image()` / `log.pointcloud()` (`pip install "nuviz[images]"`).
 
-```python
-log.step(step, loss=0.05, psnr=28.4, ssim=0.92, lpips=0.12)
-```
+### `log.step(step, **metrics)`
 
-#### `log.image(name, data, cmap=None)`
-
-Save an image. Accepts numpy arrays or torch tensors. Saved as PNG in `images/`.
-
-```python
-log.image("render", pred_image)        # HWC or CHW, float [0,1] or uint8
-log.image("depth", depth_map, cmap="turbo")  # Single channel with colormap
-```
-
-#### `log.pointcloud(tag, xyz, colors=None, opacities=None)`
-
-Save a point cloud as binary PLY. Saved in `pointclouds/`.
+Record scalars for a step. Never blocks on disk: records are queued and
+written by a background thread.
 
 ```python
-log.pointcloud("gaussians", xyz, colors=rgb, opacities=alpha)
+log.step(step, loss=loss, psnr=psnr, lr=scheduler.get_last_lr()[0])
 ```
 
-#### `log.scene(scene_name, **metrics)`
+Values may be Python numbers, numpy scalars or 0-dim tensors (`loss`, not
+only `loss.item()`). NaN/Inf are recorded and raise an alert. A value that is
+not a scalar is skipped with a one-time warning.
 
-Record per-scene evaluation metrics. Written to `scenes.jsonl`.
+### `log.define_metric(name, goal)`
+
+Declare whether lower (`"min"`) or higher (`"max"`) is better. Without it the
+CLI guesses from the name (`loss`, `error`, `fid`, … are minimized, everything
+else maximized).
+
+```python
+log.define_metric("regret", "min")
+```
+
+### `log.image(name, data, cmap=None, step=None)`
+
+Save an image (numpy array or torch tensor; HWC float in [0, 1] or uint8) as
+`images/step_<step>_<name>.png`.
+
+```python
+log.image("render", pred_image)
+log.image("depth", depth_map, cmap="turbo")   # single channel with colormap
+```
+
+### `log.pointcloud(tag, xyz, colors=None, opacities=None, step=None)`
+
+Save a point cloud as binary PLY in `pointclouds/`.
+
+### `log.scene(scene_name, **metrics)`
+
+Record per-scene evaluation metrics for `nuviz breakdown`.
 
 ```python
 log.scene("bicycle", psnr=28.4, ssim=0.92)
-log.scene("garden", psnr=26.1, ssim=0.88)
 ```
 
-#### `log.finish()`
+### `log.flush()` / `log.finish()`
 
-Flush all data, stop background threads, write final metadata. Called automatically when using `Logger` as a context manager.
+`flush()` blocks until everything logged so far is on disk. `finish()`
+flushes, stops background threads and writes the final summary.
 
 ```python
-log.finish()
-
-# Or use as context manager:
-with Logger("exp-001") as log:
+with Logger("exp-001") as log:      # finish() is called for you
     for step in range(1000):
         log.step(step, loss=loss)
-# finish() called automatically
 ```
+
+How a run ends is recorded as its status:
+
+| Situation | Status |
+|---|---|
+| `finish()` called, or the `with` block exits normally | `done` |
+| The `with` block raises, or the script dies with an unhandled exception | `failed` (with the error) |
+| The script ends without `finish()` | `done` (finalized at interpreter exit) |
+| The process is killed (`SIGKILL`, OOM, node failure) | shown as `crashed` once its heartbeat stops |
+
+### Alerts
+
+* **NaN / Inf** — reported for every metric.
+* **Spike** — a value much worse than the recent moving average (more than
+  3σ *and* more than 50 % of the mean). Watched for metrics that are
+  minimized, and for metrics whose goal you declared with `define_metric`.
+  Schedules such as the learning rate are therefore not flagged.
+
+Alerts are printed to stderr, stored in `events.jsonl` and shown live in
+`nuviz watch`. `log.alerts` returns them.
 
 ### Ablation
 
 ```python
-from nuviz import Ablation
+from nuviz import Ablation, Logger
 
-sweep = Ablation("lr_depth_sweep")
-sweep.vary("lr", [1e-3, 1e-4, 1e-5])
-sweep.vary("depth", [2, 4, 8])
-sweep.toggle("augmentation")  # True/False
+ab = Ablation("lr_depth", base_config={"lr": 1e-3, "depth": 4})
+ab.vary("lr", [1e-3, 1e-4])
+ab.vary("depth", [2, 4, 8])
+ab.toggle("augmentation")            # True / False
 
-configs = sweep.generate()  # List of config combinations
-sweep.export("configs.yaml")  # Export to YAML (requires PyYAML)
-sweep.export("configs.json")  # Export to JSON
+for cfg in ab.generate():            # 12 config dicts
+    for seed in range(3):
+        with Logger(f"lr{cfg['lr']}_d{cfg['depth']}_seed{seed}",
+                    project="sweep", hparams=cfg, seed=seed) as log:
+            train(cfg, seed, log)
+
+ab.export("configs/sweep/")          # one YAML file per config (needs PyYAML)
 ```
 
-### GPU Metrics
+Runs that share hyperparameters but differ in `seed` are grouped
+automatically by `nuviz leaderboard --aggregate` and `nuviz matrix`.
 
-Automatic when nvidia-smi is available. Each JSONL record includes:
+## wandb-style API
 
-```json
-{"step": 100, "timestamp": 1234567890.0, "metrics": {"loss": 0.05}, "gpu": {"gpu_util": 95, "mem_used_mb": 8192, "mem_total_mb": 24576, "temperature_c": 72}}
+For scripts written against `wandb.init` / `wandb.log`:
+
+```python
+import nuviz
+
+run = nuviz.init(project="my_project", name="exp-001", config={"lr": 1e-3})
+for batch in loader:
+    nuviz.log({"loss": loss, "train": {"acc": acc}})   # step auto-increments
+nuviz.log({"val/render": image_array}, step=1000)      # arrays become images
+nuviz.finish()
 ```
 
-Disable with `NUVIZ_GPU=0` or `NuvizConfig(enable_gpu=False)`.
+`log(data, step=None, commit=True)` follows wandb's semantics: nested dicts
+are flattened to `a/b`, `commit=False` holds values for the next call.
+`run.define_metric("x", summary="min")` sets the direction. wandb-only
+arguments to `init` (`entity`, `mode`, …) are accepted and ignored.
+
+## Framework integrations
+
+```python
+# Lightning
+from nuviz.integrations.lightning import NuvizLogger
+trainer = Trainer(logger=NuvizLogger("exp-001", project="my_project"))
+
+# Hugging Face Trainer
+from nuviz.integrations.transformers import NuvizCallback
+trainer = Trainer(..., callbacks=[NuvizCallback(project="my_project")])
+```
+
+Both log from the main process only and record the hyperparameters. A run
+that ends with an error is marked `failed`.
 
 ---
 
-## CLI Commands
+## CLI commands
 
-All commands accept `--dir <path>` to override the base directory (default: `~/.nuviz/experiments`).
+Global option: `--dir <path>` overrides the base directory.
+
+**Selecting experiments.** Wherever a command takes an experiment you can
+give:
+
+* its name (`exp-001`),
+* `project/name` when the name exists in several projects,
+* a prefix (≥ 4 characters) of its run id,
+* a path to its directory, even outside the base directory.
+
+A name that matches several experiments is an error that lists them; add
+`--project` or use `project/name`.
 
 ### `nuviz watch`
 
-Real-time TUI dashboard with braille-rendered metric curves.
+Live dashboard.
 
 ```bash
-nuviz watch exp-001                    # Watch a single experiment
-nuviz watch exp-001 exp-002            # Watch multiple
-nuviz watch --latest 3 --project gs    # Watch 3 most recent in project
-nuviz watch --poll                     # Use polling (NFS/WSL)
+nuviz watch                            # the most recent experiment
+nuviz watch exp-001 exp-002            # several, overlaid
+nuviz watch --latest 3 --project gs    # the 3 most recent in a project
+nuviz watch --poll                     # no filesystem notifications (NFS/WSL)
 ```
 
-**Keyboard**: `q` to quit, arrow keys to scroll, `Tab` to cycle metrics.
+Two charts, a table of runs (status, step / max steps, speed, ETA, last and
+best values) and a panel with GPU load and alerts.
+
+| Key | Action |
+|---|---|
+| `q`, `Esc` | quit |
+| `Tab` | focus the other chart |
+| `m` / `M`, `↓` / `↑` | next / previous metric in the focused chart |
+| `a` | x axis: step ↔ wall time |
+| `l` | linear ↔ log y axis |
+| `s` / `S` | more / less smoothing |
+| `+` / `-` | zoom the x axis |
+| `←` / `→` | pan when zoomed in |
+| `r` | reset zoom and pan |
+| `v` | one chart ↔ two charts |
+| `?` | help |
+
+### `nuviz compare`
+
+The same dashboard, opened on one large chart.
+
+```bash
+nuviz compare exp-001 exp-002 --metric loss
+nuviz compare --project gs --metric psnr          # everything in a project
+nuviz compare exp-001 exp-002 --align wall_time
+```
 
 ### `nuviz ls`
 
-List all discovered experiments with status and step count.
-
 ```bash
-nuviz ls                          # All experiments
-nuviz ls --project gaussian       # Filter by project
-nuviz ls --sort name              # Sort by name (default: date)
+nuviz ls
+nuviz ls --project gs --sort steps      # sort: date (default), name, steps
+nuviz ls --status running               # running, done, failed, crashed, unknown
+nuviz ls --tag baseline --metric psnr   # metric shown in the "Best" column
 ```
 
 ### `nuviz leaderboard`
 
-Ranked experiment table by a chosen metric.
-
 ```bash
-nuviz leaderboard --sort psnr              # Best PSNR first
-nuviz leaderboard --sort loss --asc        # Lowest loss first
-nuviz leaderboard --top 10                 # Show top 10 only
-nuviz leaderboard --format latex           # LaTeX table output
-nuviz leaderboard --format markdown        # Markdown table
-nuviz leaderboard --aggregate              # Group multi-seed runs (mean +/- std)
+nuviz leaderboard --sort psnr                 # best first
+nuviz leaderboard --sort psnr --asc           # worst first
+nuviz leaderboard --value final               # value at the last step, not the best step
+nuviz leaderboard --steps                     # show the step each value comes from
+nuviz leaderboard --aggregate                 # mean ± std over seeds
+nuviz leaderboard --metric psnr --metric ssim --top 10 --precision 2
+nuviz leaderboard --format latex              # table (default), markdown, latex, csv
 ```
 
-### `nuviz compare`
-
-Multi-experiment curve overlay in a TUI.
-
-```bash
-nuviz compare exp-001 exp-002 --metric loss
-nuviz compare --project gs --metric psnr    # All experiments in project
-nuviz compare exp-001 exp-002 --align wall_time  # Align by wall time
-```
+Experiments that never logged the sort metric are listed last. `--value
+best` reports the best value seen at any step; for test metrics prefer
+`--value final`, or select the checkpoint on a validation metric.
 
 ### `nuviz matrix`
 
-Ablation hyperparameter matrix view.
+Ablation matrix from logged hyperparameters (`Logger(hparams=…)`), with dot
+notation for nested keys. Cells with several runs show mean ± std.
 
 ```bash
-nuviz matrix --rows lr --cols depth --metric psnr
-nuviz matrix --rows lr --cols depth --metric psnr --format latex
-nuviz matrix --project sweep_v2
+nuviz matrix --rows lr --cols model.depth --metric psnr
+nuviz matrix --rows lr --cols model.depth --metric psnr --format latex --value final
 ```
 
 ### `nuviz breakdown`
 
-Per-scene metric decomposition table.
-
 ```bash
-nuviz breakdown exp-001                      # Default table
-nuviz breakdown exp-001 --latex              # LaTeX format
-nuviz breakdown exp-001 --diff exp-002       # Show deltas
+nuviz breakdown exp-001
+nuviz breakdown exp-001 --latex               # or --markdown
+nuviz breakdown exp-001 --diff exp-002        # per-scene deltas
 ```
 
 ### `nuviz export`
 
-Export raw experiment data.
-
 ```bash
-nuviz export exp-001 --format csv            # CSV output
-nuviz export exp-001 --format json           # JSON output
-nuviz export exp-001 --metric loss --metric psnr  # Specific metrics
+nuviz export exp-001                          # CSV to stdout
+nuviz export exp-001 --format json
+nuviz export exp-001 --metric loss --metric psnr > curves.csv
 ```
 
-### `nuviz image`
+Every step is exported; NaN/Inf and metrics not logged at a step are empty
+cells.
 
-Browse experiment images in the terminal.
-
-```bash
-nuviz image exp-001                          # Browse all images
-nuviz image exp-001 --step 5000              # Specific step
-nuviz image exp-001 --tag render --latest    # Latest render
-nuviz image exp-001 --tag render --side-by-side gt  # Side by side
-```
-
-Rendering auto-detects terminal protocol: Kitty > iTerm2 > Sixel > half-block fallback.
-
-### `nuviz diff`
-
-Visual diff between two experiments.
+### `nuviz image` / `nuviz diff`
 
 ```bash
-nuviz diff exp-001 exp-002 --tag render
-nuviz diff exp-001 exp-002 --step 10000 --heatmap  # Error heatmap
+nuviz image exp-001                           # browse (←/→, q)
+nuviz image exp-001 --tag render --latest
+nuviz image exp-001 --tag render --side-by-side gt
+nuviz diff exp-001 exp-002 --tag render       # latest common step
+nuviz diff exp-001 exp-002 --step 10000 --heatmap
 ```
+
+The image protocol (Kitty, iTerm2, Sixel) is detected by querying the
+terminal; anything else gets a half-block rendering that works everywhere.
+Force one with `--protocol kitty|iterm2|sixel|halfblock` or
+`NUVIZ_IMAGE_PROTOCOL`.
 
 ### `nuviz view`
 
-Point cloud (PLY) statistics and inspection.
-
 ```bash
-nuviz view exp-001                           # Latest PLY in experiment
-nuviz view path/to/file.ply                  # Direct path
-nuviz view exp-001 --histogram               # Attribute distributions
+nuviz view exp-001                            # latest PLY of an experiment
+nuviz view path/to/file.ply --histogram
 ```
 
 ### `nuviz tag`
 
-Tag experiments for organization.
-
 ```bash
-nuviz tag exp-001 baseline                   # Add tag
-nuviz tag exp-001 --list                     # List tags
-nuviz tag exp-001 --remove baseline          # Remove tag
+nuviz tag exp-001 baseline
+nuviz tag exp-001 --list
+nuviz tag exp-001 --remove baseline
 ```
 
 ### `nuviz cleanup`
 
-Identify and remove low-value experiments.
-
 ```bash
-nuviz cleanup --project gs                   # Dry run (default)
-nuviz cleanup --project gs --keep-top 3      # Keep top 3 by loss
-nuviz cleanup --metric psnr --keep-top 5     # Rank by PSNR
-nuviz cleanup --project gs --force           # Actually delete
+nuviz cleanup --project gs                    # dry run: shows what would go
+nuviz cleanup --project gs --keep-top 3 --metric psnr
+nuviz cleanup --project gs --force            # delete
 ```
+
+Running experiments are never removed. Tagged experiments are kept unless
+`--include-tagged` is given. Runs without the ranking metric are removed
+first.
 
 ### `nuviz reproduce`
 
-Print a reproduction guide from experiment metadata.
-
-```bash
-nuviz reproduce exp-001
-# Outputs: git checkout, pip install, GPU info, config, seed
-```
+Prints a shell script with the commit, packages, hyperparameters, seed and
+original command line of a run.
 
 ---
 
-## Data Format
+## Configuration
 
-Each experiment lives in `<base_dir>/<project?>/<experiment_name>/`:
+### Logger (environment variables or `NuvizConfig`)
 
-| File | Format | Written By |
-|------|--------|-----------|
-| `metrics.jsonl` | One JSON object per step | `Logger.step()` |
-| `meta.json` | Environment snapshot + final stats | `Logger.__init__()` / `Logger.finish()` |
-| `scenes.jsonl` | Per-scene metrics | `Logger.scene()` |
-| `images/<tag>_<step>.png` | Rendered images | `Logger.image()` |
-| `pointclouds/<tag>_step_<step>.ply` | Binary PLY | `Logger.pointcloud()` |
+| Variable | Default | Description |
+|---|---|---|
+| `NUVIZ_DIR` | `~/.nuviz/experiments` | Base directory |
+| `NUVIZ_FLUSH_INTERVAL` | `2.0` | Seconds between background flushes |
+| `NUVIZ_FLUSH_COUNT` | `50` | Queued records that trigger a flush |
+| `NUVIZ_QUEUE_SIZE` | `100000` | Maximum queued records before new ones are dropped |
+| `NUVIZ_CLOSE_TIMEOUT` | `30` | Seconds `finish()` waits for the writer |
+| `NUVIZ_HEARTBEAT` | `10` | Seconds between heartbeats |
+| `NUVIZ_ALERTS` | `1` | `0` disables anomaly alerts |
+| `NUVIZ_SNAPSHOT` | `1` | `0` disables the environment snapshot |
+| `NUVIZ_GPU` | `1` | `0` disables GPU polling |
+| `NUVIZ_GPU_POLL` | `5.0` | GPU polling interval in seconds |
+| `NUVIZ_ROTATE_SIZE` | `50000000` | Rotate `metrics.jsonl` at this many bytes |
+| `NUVIZ_ROTATE_LINES` | `500000` | Rotate `metrics.jsonl` at this many lines |
 
-JSONL files rotate automatically at 50MB/500k lines. Rotated files are named `metrics.1.jsonl`, `metrics.2.jsonl`, etc. The Rust CLI merges all segments transparently.
+### CLI
+
+| Variable | Description |
+|---|---|
+| `NUVIZ_DIR` | Base directory (`--dir` takes precedence) |
+| `NUVIZ_IMAGE_PROTOCOL` | `kitty`, `iterm2`, `sixel` or `halfblock` |
+| `NUVIZ_CACHE_DIR` | Where per-experiment summaries are cached |
+| `NUVIZ_NO_CACHE` | `1` disables the summary cache |
