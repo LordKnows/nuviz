@@ -47,9 +47,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned so new clippy lints in a future stable cannot break CI on
+      # unrelated changes. Bump deliberately.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.97.0"
           components: clippy, rustfmt
 
       - name: Cache cargo
@@ -67,7 +70,7 @@ jobs:
 
       - name: Clippy
         working-directory: cli
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build
         working-directory: cli
@@ -95,7 +98,9 @@ jobs:
         run: pip install -e ".[dev,images,yaml]"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.0"
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -108,4 +113,4 @@ jobs:
 
       - name: Run integration tests
         working-directory: cli
-        run: cargo test --test integration_test --test hardening_test
+        run: cargo test --test integration_test --test hardening_test --test conformance_test

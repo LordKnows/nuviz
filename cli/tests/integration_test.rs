@@ -195,13 +195,63 @@ log.finish()
     let lines: Vec<&str> = content.trim().split('\n').collect();
     assert_eq!(lines.len(), 20);
 
-    // Line 10 should have NaN (which is valid JSON when serialized by Python as NaN)
-    // Python's json.dumps writes NaN — verify Rust can handle it
+    // The NaN is written as JSON null, so every line is strict JSON...
     for line in &lines {
-        // serde_json can't parse NaN by default, but our reader should skip it
-        let _: Result<serde_json::Value, _> = serde_json::from_str(line);
-        // We just verify no panic — some lines may fail to parse and that's OK
+        serde_json::from_str::<serde_json::Value>(line).expect("strict JSON");
     }
+
+    // ...and the Rust reader keeps the whole record instead of dropping it.
+    let records = nuviz_cli::data::metrics::read_metrics(&jsonl_path);
+    assert_eq!(records.len(), 20);
+    assert!(records[10].metrics["loss"].is_nan());
+    assert_eq!(records[10].step, 10);
+}
+
+#[test]
+fn test_python_numpy_scalars_reach_rust() {
+    if !nuviz_available() {
+        eprintln!("Skipping: nuviz Python package not installed");
+        return;
+    }
+    let has_numpy = Command::new(python())
+        .args(["-c", "import numpy"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !has_numpy {
+        eprintln!("Skipping: numpy not installed");
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let base_dir = dir.path().to_str().unwrap();
+
+    let script = format!(
+        r#"
+import numpy as np
+from nuviz import Logger
+from nuviz.config import NuvizConfig
+
+config = NuvizConfig(
+    base_dir=__import__("pathlib").Path("{base_dir}"),
+    flush_interval_seconds=0.05,
+    flush_count=4,
+    enable_snapshot=False,
+    enable_gpu=False,
+)
+log = Logger("np-test", config=config, snapshot=False)
+for step in range(30):
+    log.step(step, loss=np.float32(1.0 / (step + 1)), acc=np.float64(step / 30), n=np.int64(step))
+log.finish()
+"#
+    );
+    run_python(&script);
+
+    let jsonl_path = Path::new(base_dir).join("np-test").join("metrics.jsonl");
+    let records = nuviz_cli::data::metrics::read_metrics(&jsonl_path);
+    assert_eq!(records.len(), 30, "numpy scalars must not kill the writer");
+    assert_eq!(records[29].metrics["n"], 29.0);
+    assert!((records[1].metrics["loss"] - 0.5).abs() < 1e-6);
 }
 
 #[test]

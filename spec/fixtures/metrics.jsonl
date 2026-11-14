@@ -1,0 +1,8 @@
+{"step":0,"timestamp":1700000000.5,"metrics":{"loss":1.0,"psnr":20.25}}
+{"step":1,"timestamp":1700000001.0,"metrics":{"loss":null,"psnr":21.5}}
+{"step":2,"timestamp":1700000002.0,"metrics":{"loss":null,"psnr":null}}
+{"step":3,"timestamp":1700000003.0,"metrics":{"loss":0.25,"count":7}}
+{"step":4,"timestamp":1700000004.0,"metrics":{"val/loss":0.125,"\u5b66\u4e60\u7387":0.001,"a \"quoted\" name":-2.5}}
+{"step":5,"timestamp":1700000005.0,"metrics":{"loss":0.0625},"gpu":{"gpu_util":87,"mem_used_mb":10240,"mem_total_mb":24576,"temperature_c":72}}
+{"step":9999999999,"timestamp":1700000006.0,"metrics":{"tiny":1e-12,"huge":1.5e+300}}
+{"step":7,"timestamp":1700000007.0,"metrics":{}}
