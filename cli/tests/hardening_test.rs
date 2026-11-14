@@ -1,7 +1,8 @@
 //! Error handling and edge case tests for the Rust CLI data layer.
 
 use std::fs;
-use std::path::Path;
+
+use nuviz_cli::data::status::Status;
 
 #[test]
 fn test_empty_jsonl_file() {
@@ -135,7 +136,7 @@ fn test_experiment_with_metrics_but_no_meta() {
 
     let experiments = nuviz_cli::data::experiment::discover_experiments(dir.path());
     assert_eq!(experiments.len(), 1);
-    assert_eq!(experiments[0].status, "running"); // No meta = assumed running
+    assert_eq!(experiments[0].status, Status::Running); // just written, no meta
 }
 
 #[test]
@@ -151,11 +152,5 @@ fn test_experiment_with_meta_but_no_metrics() {
 
     let experiments = nuviz_cli::data::experiment::discover_experiments(dir.path());
     assert_eq!(experiments.len(), 1);
-    assert_eq!(experiments[0].status, "crashed");
-}
-
-#[test]
-fn test_best_metrics_empty_records() {
-    let best = nuviz_cli::data::metrics::best_metrics(&[]);
-    assert!(best.is_empty());
+    assert_eq!(experiments[0].status, Status::Crashed);
 }

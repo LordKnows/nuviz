@@ -1,16 +1,25 @@
-mod cli;
-mod commands;
-mod data;
-mod terminal;
-mod tui;
-mod watcher;
-
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Commands};
+use nuviz_cli::cli::{Cli, Commands};
+use nuviz_cli::{commands, data};
+
+/// Die quietly when the reader of our output goes away (`nuviz ls | head`),
+/// like other command-line tools, instead of reporting a broken pipe.
+#[cfg(unix)]
+fn restore_default_sigpipe() {
+    // SAFETY: called once at startup before any threads exist; SIG_DFL is a
+    // valid disposition for SIGPIPE.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_default_sigpipe() {}
 
 fn main() -> Result<()> {
+    restore_default_sigpipe();
     let cli = Cli::parse();
 
     let base_dir = data::experiment::resolve_base_dir(cli.dir.as_deref());

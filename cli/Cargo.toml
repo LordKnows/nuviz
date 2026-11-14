@@ -2,11 +2,12 @@
 name = "nuviz-cli"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 description = "Terminal-native ML training visualization CLI"
 license = "MIT"
 repository = "https://github.com/LordKnows/nuviz"
 homepage = "https://github.com/LordKnows/nuviz"
-readme = "../README.md"
+readme = "README.md"
 keywords = ["ml", "visualization", "terminal", "tui", "training"]
 categories = ["command-line-utilities", "visualization"]
 
@@ -27,6 +28,15 @@ anyhow = "1"
 comfy-table = "7"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"
+ratatui-image = { version = "8.1.1", default-features = false, features = ["crossterm"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

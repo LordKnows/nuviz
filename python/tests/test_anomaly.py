@@ -98,3 +98,59 @@ class TestSpikeDetection:
             alerts = detector.check(i, {"loss": 0.5})
             # Should not crash, no spike alert (stddev=0 guard)
             assert all(a.alert_type != AlertType.SPIKE for a in alerts)
+
+
+class TestSpikePolicy:
+    def test_learning_rate_schedule_is_not_a_spike(self) -> None:
+        detector = AnomalyDetector()
+        alerts = []
+        for step in range(500):
+            lr = 1e-3 * 0.5 ** (step // 50)  # halves every 50 steps
+            alerts += detector.check(step, {"lr": lr, "epoch": step // 100})
+        assert alerts == []
+
+    def test_small_wobble_in_loss_is_not_a_spike(self) -> None:
+        """A statistically unusual but practically tiny change stays quiet."""
+        detector = AnomalyDetector()
+        for step in range(50):
+            assert detector.check(step, {"loss": 1.0 + 0.0001 * (step % 2)}) == []
+        assert detector.check(50, {"loss": 1.05}) == []
+
+    def test_late_training_spike_is_caught(self) -> None:
+        """Whole-history statistics would be blinded by the large early loss."""
+        detector = AnomalyDetector()
+        for step in range(1000):
+            loss = 2.0 * 0.99**step + 0.02 + 0.001 * (step % 3)
+            assert detector.check(step, {"loss": loss}) == [], f"false positive at {step}"
+        alerts = detector.check(1000, {"loss": 1.0})
+        assert [a.alert_type for a in alerts] == [AlertType.SPIKE]
+        assert "recent mean" in alerts[0].message
+
+    def test_improvement_is_not_a_spike(self) -> None:
+        detector = AnomalyDetector()
+        for step in range(30):
+            detector.check(step, {"loss": 1.0 + 0.01 * (step % 2)})
+        assert detector.check(30, {"loss": 0.01}) == []
+
+    def test_cooldown_limits_repeated_alerts(self) -> None:
+        detector = AnomalyDetector(cooldown=25)
+        for step in range(30):
+            detector.check(step, {"loss": 0.1 + 0.001 * (step % 2)})
+        spikes = []
+        for step in range(30, 50):  # diverged and stays diverged
+            spikes += detector.check(step, {"loss": 50.0 + step})
+        assert len(spikes) == 1
+
+    def test_maximized_metric_watched_only_when_declared(self) -> None:
+        def run(detector: AnomalyDetector) -> list[AlertType]:
+            for step in range(30):
+                detector.check(step, {"psnr": 30.0 + 0.01 * (step % 2)})
+            return [a.alert_type for a in detector.check(30, {"psnr": 5.0})]
+
+        assert run(AnomalyDetector()) == []
+        declared = AnomalyDetector(goal_for=lambda name: "max")
+        assert run(declared) == [AlertType.SPIKE]
+
+    def test_nan_reported_for_unwatched_metrics(self) -> None:
+        alerts = AnomalyDetector().check(3, {"lr": float("nan")})
+        assert [a.alert_type for a in alerts] == [AlertType.NAN]

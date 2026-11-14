@@ -3,67 +3,67 @@ use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use crate::cli::MatrixArgs;
-use crate::data::aggregation::format_mean_std;
-use crate::data::experiment::{
-    discover_experiments, filter_by_project, group_by_config, Experiment,
-};
-use crate::data::metrics::is_minimize_metric;
+use crate::cli::{MatrixArgs, TableFormat};
+use crate::commands::common::{load_scope, print_no_experiments};
+use crate::data::aggregation::{format_stat, mean_std};
+use crate::data::experiment::Experiment;
+use crate::data::goal::Goals;
+use crate::output::{csv_line, latex_escape};
 
 pub fn run(args: MatrixArgs, base_dir: &Path) -> Result<()> {
-    let mut experiments = discover_experiments(base_dir);
-
-    if let Some(ref project) = args.project {
-        experiments = filter_by_project(&experiments, project);
-    }
-
+    let experiments = load_scope(base_dir, args.project.as_deref());
     if experiments.is_empty() {
-        println!("No experiments found in {}", base_dir.display());
+        print_no_experiments(base_dir);
         return Ok(());
     }
 
-    // Extract parameter values from experiment configs or names
     let rows_param = &args.rows;
     let cols_param = &args.cols;
     let metric = &args.metric;
 
-    // Build the matrix: (row_val, col_val) -> metric_value or aggregated
+    let mut goals = Goals::default();
+    for exp in &experiments {
+        goals.merge(&exp.meta.metric_goals);
+    }
+    let goal = goals.get(metric);
+    let minimize = goal.is_min();
+
+    // (row_val, col_val) -> one value per run; several runs in a cell
+    // (multiple seeds) are shown as mean ± std.
     let mut matrix: HashMap<(String, String), Vec<f64>> = HashMap::new();
     let mut row_values = BTreeSet::new();
     let mut col_values = BTreeSet::new();
 
-    // Try to group by config for multi-seed aggregation
-    let groups = group_by_config(&experiments);
-
-    for group_exps in groups.values() {
-        for exp in group_exps {
-            let row_val = extract_param(exp, rows_param);
-            let col_val = extract_param(exp, cols_param);
-
-            if let (Some(rv), Some(cv)) = (row_val, col_val) {
-                if let Some(&metric_val) = exp.best_metrics.get(metric) {
-                    if metric_val.is_finite() {
-                        row_values.insert(rv.clone());
-                        col_values.insert(cv.clone());
-                        matrix.entry((rv, cv)).or_default().push(metric_val);
-                    }
-                }
+    for exp in &experiments {
+        let (Some(rv), Some(cv)) = (
+            extract_param(exp, rows_param),
+            extract_param(exp, cols_param),
+        ) else {
+            continue;
+        };
+        if let Some((value, _)) = exp.summary().value(metric, args.value, goal) {
+            if value.is_finite() {
+                row_values.insert(rv.clone());
+                col_values.insert(cv.clone());
+                matrix.entry((rv, cv)).or_default().push(value);
             }
         }
     }
 
     if matrix.is_empty() {
-        println!("Could not build matrix. Ensure experiments have config metadata");
-        println!("with parameters '{}' and '{}'.", rows_param, cols_param);
-        println!("\nTip: Use Ablation.export() to generate configs with parameter metadata,");
+        println!("Could not build matrix. Ensure experiments log '{metric}' and record");
+        println!("the parameters '{rows_param}' and '{cols_param}'.");
+        println!("\nTip: pass hyperparameters to the logger, e.g.");
+        println!("  Logger(name, hparams={{\"{rows_param}\": ..., \"{cols_param}\": ...}})");
         println!("or name experiments with parameter values (e.g., 'lr_1e-4_sh_2').");
         return Ok(());
     }
 
-    let minimize = is_minimize_metric(metric);
+    let row_values = natural_sorted(row_values);
+    let col_values = natural_sorted(col_values);
 
-    match args.format.as_str() {
-        "latex" => print_latex(
+    match args.format {
+        TableFormat::Latex => print_latex(
             &matrix,
             &row_values,
             &col_values,
@@ -72,7 +72,7 @@ pub fn run(args: MatrixArgs, base_dir: &Path) -> Result<()> {
             metric,
             minimize,
         ),
-        "markdown" => print_markdown(
+        TableFormat::Markdown => print_markdown(
             &matrix,
             &row_values,
             &col_values,
@@ -81,37 +81,48 @@ pub fn run(args: MatrixArgs, base_dir: &Path) -> Result<()> {
             metric,
             minimize,
         ),
-        "csv" => print_csv(&matrix, &row_values, &col_values, rows_param, cols_param),
-        _ => print_table(
-            &matrix,
-            &row_values,
-            &col_values,
-            rows_param,
-            cols_param,
-            metric,
-            minimize,
-        ),
-    }
-
-    // Print key findings
-    if args.format == "table" {
-        print_findings(
-            &matrix,
-            &row_values,
-            &col_values,
-            rows_param,
-            cols_param,
-            metric,
-            minimize,
-        );
+        TableFormat::Csv => print_csv(&matrix, &row_values, &col_values, rows_param, cols_param),
+        TableFormat::Table => {
+            print_table(
+                &matrix,
+                &row_values,
+                &col_values,
+                rows_param,
+                cols_param,
+                metric,
+                minimize,
+            );
+            print_findings(
+                &matrix,
+                &row_values,
+                &col_values,
+                rows_param,
+                cols_param,
+                metric,
+                minimize,
+            );
+        }
     }
 
     Ok(())
 }
 
+/// Order parameter values the way a person would: numbers numerically
+/// (so 64 < 128 and 1e-4 < 0.001), then everything else alphabetically.
+fn natural_sorted(values: BTreeSet<String>) -> Vec<String> {
+    let mut values: Vec<String> = values.into_iter().collect();
+    values.sort_by(|a, b| match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(x), Ok(y)) => x.total_cmp(&y).then_with(|| a.cmp(b)),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => a.cmp(b),
+    });
+    values
+}
+
 fn extract_param(exp: &Experiment, param: &str) -> Option<String> {
     // Try config JSON first
-    if let Some(ref config) = exp.config {
+    if let Some(ref config) = exp.meta.config {
         let keys: Vec<&str> = param.split('.').collect();
         let mut current = config;
         for key in &keys {
@@ -121,19 +132,23 @@ fn extract_param(exp: &Experiment, param: &str) -> Option<String> {
     }
 
     // Fallback: parse experiment name for param_value pattern
-    let name = &exp.name;
+    let name = &exp.dir_name;
     let param_short = param.split('.').next_back().unwrap_or(param);
 
-    // Look for patterns like "lr_1e-4" or "lr1e-4" or "lr-1e-4"
+    // Look for patterns like "lr_1e-4", "lr1e-4" or "lr-1e-4". The value
+    // ends at `_`, or at a `-` that starts the next word ("lr_0.001-sh_2"),
+    // but not at the `-` inside a number such as "1e-4".
     if let Some(pos) = name.find(param_short) {
         let after = &name[pos + param_short.len()..];
-        // Skip separator characters
-        let value_start = after.trim_start_matches(['_', '-', '=']);
-        // Take until next separator
-        let value: String = value_start
-            .chars()
-            .take_while(|c| !matches!(c, '_' | ' '))
-            .collect();
+        let rest: Vec<char> = after.trim_start_matches(['_', '-', '=']).chars().collect();
+        let end = (0..rest.len())
+            .find(|&i| {
+                rest[i] == '_'
+                    || rest[i] == ' '
+                    || (rest[i] == '-' && rest.get(i + 1).is_some_and(|c| c.is_alphabetic()))
+            })
+            .unwrap_or(rest.len());
+        let value: String = rest[..end].iter().collect();
         if !value.is_empty() {
             return Some(value);
         }
@@ -158,21 +173,16 @@ fn json_value_to_string(v: &serde_json::Value) -> String {
 }
 
 fn cell_value(values: &[f64]) -> (f64, String) {
-    let mean = values.iter().sum::<f64>() / values.len() as f64;
-    if values.len() > 1 {
-        let variance =
-            values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
-        let std = variance.sqrt();
-        (mean, format_mean_std(mean, std))
-    } else {
-        (mean, format!("{mean:.4}"))
+    match mean_std(values) {
+        Some(stat) => (stat.mean, format_stat(&stat, 4)),
+        None => (f64::NAN, "-".into()),
     }
 }
 
 fn print_table(
     matrix: &HashMap<(String, String), Vec<f64>>,
-    row_values: &BTreeSet<String>,
-    col_values: &BTreeSet<String>,
+    row_values: &[String],
+    col_values: &[String],
     rows_param: &str,
     _cols_param: &str,
     metric: &str,
@@ -218,8 +228,8 @@ fn print_table(
 
 fn print_latex(
     matrix: &HashMap<(String, String), Vec<f64>>,
-    row_values: &BTreeSet<String>,
-    col_values: &BTreeSet<String>,
+    row_values: &[String],
+    col_values: &[String],
     rows_param: &str,
     _cols_param: &str,
     metric: &str,
@@ -237,19 +247,22 @@ fn print_latex(
 
     println!("\\begin{{table}}[t]");
     println!("\\centering");
-    println!("\\caption{{Ablation matrix: {metric} {arrow}.}}");
+    println!(
+        "\\caption{{Ablation matrix: {} {arrow}.}}",
+        latex_escape(metric)
+    );
     println!("\\begin{{tabular}}{{{cols}}}");
     println!("\\toprule");
 
-    let mut header = vec![rows_param.replace('_', "\\_")];
+    let mut header = vec![latex_escape(rows_param)];
     for cv in col_values {
-        header.push(cv.replace('_', "\\_"));
+        header.push(latex_escape(cv));
     }
     println!("{} \\\\", header.join(" & "));
     println!("\\midrule");
 
     for rv in row_values {
-        let mut row = vec![rv.replace('_', "\\_")];
+        let mut row = vec![latex_escape(rv)];
         for cv in col_values {
             if let Some(values) = matrix.get(&(rv.clone(), cv.clone())) {
                 let (mean, display) = cell_value(values);
@@ -274,8 +287,8 @@ fn print_latex(
 
 fn print_markdown(
     matrix: &HashMap<(String, String), Vec<f64>>,
-    row_values: &BTreeSet<String>,
-    col_values: &BTreeSet<String>,
+    row_values: &[String],
+    col_values: &[String],
     rows_param: &str,
     _cols_param: &str,
     metric: &str,
@@ -314,8 +327,8 @@ fn print_markdown(
 
 fn print_csv(
     matrix: &HashMap<(String, String), Vec<f64>>,
-    row_values: &BTreeSet<String>,
-    col_values: &BTreeSet<String>,
+    row_values: &[String],
+    col_values: &[String],
     rows_param: &str,
     _cols_param: &str,
 ) {
@@ -323,7 +336,7 @@ fn print_csv(
     for cv in col_values {
         header.push(cv.clone());
     }
-    println!("{}", header.join(","));
+    println!("{}", csv_line(&header));
 
     for rv in row_values {
         let mut row = vec![rv.clone()];
@@ -335,14 +348,14 @@ fn print_csv(
                 row.push(String::new());
             }
         }
-        println!("{}", row.join(","));
+        println!("{}", csv_line(&row));
     }
 }
 
 fn print_findings(
     matrix: &HashMap<(String, String), Vec<f64>>,
-    row_values: &BTreeSet<String>,
-    col_values: &BTreeSet<String>,
+    row_values: &[String],
+    col_values: &[String],
     rows_param: &str,
     cols_param: &str,
     metric: &str,
@@ -364,8 +377,8 @@ fn print_findings(
 
 fn compute_param_range(
     matrix: &HashMap<(String, String), Vec<f64>>,
-    row_values: &BTreeSet<String>,
-    col_values: &BTreeSet<String>,
+    row_values: &[String],
+    col_values: &[String],
     by_row: bool,
     minimize: bool,
 ) -> Option<(f64, String)> {
@@ -467,4 +480,59 @@ fn find_global_second_best(
         }
     }
     second
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_natural_sort_orders_numbers_numerically() {
+        let values: BTreeSet<String> = ["128", "64", "1e-4", "0.001", "true", "adam", "8"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            natural_sorted(values),
+            ["1e-4", "0.001", "8", "64", "128", "adam", "true"]
+        );
+    }
+
+    #[test]
+    fn test_param_from_name_when_no_config_was_logged() {
+        use crate::data::meta::ExperimentMeta;
+        use crate::data::status::Status;
+        let exp = |name: &str| Experiment {
+            name: name.into(),
+            dir_name: name.into(),
+            project: None,
+            dir: name.into(),
+            status: Status::Done,
+            meta: ExperimentMeta::default(),
+            started: None,
+            heartbeat_step: None,
+        };
+        let e = exp("demo-lr_0.001-sh_2_seed0");
+        assert_eq!(extract_param(&e, "lr").as_deref(), Some("0.001"));
+        assert_eq!(extract_param(&e, "sh").as_deref(), Some("2"));
+        assert_eq!(
+            extract_param(&exp("lr_1e-4_d8"), "lr").as_deref(),
+            Some("1e-4")
+        );
+        assert_eq!(extract_param(&exp("baseline"), "lr"), None);
+    }
+
+    #[test]
+    fn test_json_value_to_string() {
+        assert_eq!(json_value_to_string(&serde_json::json!(0.001)), "0.001");
+        assert_eq!(json_value_to_string(&serde_json::json!(64)), "64");
+        assert_eq!(json_value_to_string(&serde_json::json!("adam")), "adam");
+        assert_eq!(json_value_to_string(&serde_json::json!(true)), "true");
+    }
+
+    #[test]
+    fn test_cell_value_aggregates_seeds() {
+        assert_eq!(cell_value(&[0.5]).1, "0.5000");
+        assert_eq!(cell_value(&[1.0, 3.0]).1, "2.0000±1.4142");
+    }
 }

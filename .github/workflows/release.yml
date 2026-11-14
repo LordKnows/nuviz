@@ -1,18 +1,65 @@
 name: Release
 
+# Publishing uses PyPI Trusted Publishing (OIDC): no long-lived PyPI token is
+# stored in this repository. One-time setup on pypi.org for BOTH projects
+# (`nuviz` and `nuviz-cli`): add a trusted publisher with owner/repository of
+# this repo, workflow `release.yml` and environment `pypi`.
+# See CONTRIBUTING.md ("Releasing").
+
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.97.0"
 
 jobs:
+  verify:
+    name: Verify versions and run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that the tag matches every package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo_version=$(grep -m1 '^version' cli/Cargo.toml | cut -d'"' -f2)
+          py_version=$(grep -m1 '^version' python/pyproject.toml | cut -d'"' -f2)
+          init_version=$(grep -m1 '__version__' python/src/nuviz/__init__.py | cut -d'"' -f2)
+          status=0
+          for pair in "cli/Cargo.toml=$cargo_version" "python/pyproject.toml=$py_version" "nuviz.__version__=$init_version"; do
+            if [ "${pair#*=}" != "$tag" ]; then
+              echo "::error::${pair%%=*} is ${pair#*=} but the tag is $tag"
+              status=1
+            fi
+          done
+          exit $status
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python tests
+        working-directory: python
+        run: |
+          pip install -e ".[dev,images,yaml]"
+          pytest tests/ -q
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Rust tests (unit, conformance, end-to-end)
+        working-directory: cli
+        run: cargo test
+
   build-cli:
     name: Build CLI (${{ matrix.target }})
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -37,9 +84,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
 
       - name: Install cross
@@ -49,84 +96,163 @@ jobs:
       - name: Build (cross)
         if: matrix.use_cross
         working-directory: cli
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --release --locked --target ${{ matrix.target }}
 
       - name: Build (native)
         if: "!matrix.use_cross"
         working-directory: cli
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Rename binary (unix)
-        if: runner.os != 'Windows'
-        run: cp cli/target/${{ matrix.target }}/release/nuviz ${{ matrix.artifact }}
+      - name: Collect binary and checksum
+        shell: bash
+        run: |
+          src="cli/target/${{ matrix.target }}/release/nuviz"
+          [ -f "$src.exe" ] && src="$src.exe"
+          cp "$src" "${{ matrix.artifact }}"
+          if command -v sha256sum >/dev/null; then
+            sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          fi
 
-      - name: Rename binary (windows)
-        if: runner.os == 'Windows'
-        run: cp cli/target/${{ matrix.target }}/release/nuviz.exe ${{ matrix.artifact }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          name: bin-${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
 
-  publish-pypi:
-    name: Publish to PyPI
-    runs-on: ubuntu-latest
+  build-cli-wheels:
+    name: Build nuviz-cli wheel (${{ matrix.target }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64 }
+          - { os: ubuntu-latest, target: aarch64 }
+          - { os: macos-latest, target: x86_64 }
+          - { os: macos-latest, target: aarch64 }
+          - { os: windows-latest, target: x64 }
     steps:
       - uses: actions/checkout@v4
 
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: cli
+          target: ${{ matrix.target }}
+          manylinux: auto
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          args: --release --locked --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-cli-${{ matrix.os }}-${{ matrix.target }}
+          path: cli/dist/*.whl
+
+  build-cli-sdist:
+    name: Build nuviz-cli sdist
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: cli
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-cli-sdist
+          path: cli/dist/*.tar.gz
+
+  build-python:
+    name: Build nuviz (Python logger)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install build tools
-        run: pip install build twine
-
-      - name: Build wheel
+      - name: Build sdist and wheel
         working-directory: python
-        run: python -m build
+        run: |
+          pip install build
+          python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-python
+          path: python/dist/*
 
-      - name: Publish to PyPI
-        working-directory: python
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: twine upload dist/* || true
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build-cli, build-cli-wheels, build-cli-sdist, build-python]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-cli-*
+          path: dist-cli
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-python
+          path: dist-python
+
+      # skip-existing makes a re-run after a partial failure safe; any other
+      # failure (authentication, invalid metadata) fails the job.
+      - name: Publish nuviz-cli
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist-cli
+          skip-existing: true
+
+      - name: Publish nuviz
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist-python
+          skip-existing: true
 
   publish-crates:
     name: Publish to crates.io
+    needs: [build-cli, build-cli-wheels, build-cli-sdist, build-python]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Publish
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Publish (skipped only if this exact version is already published)
         working-directory: cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish || true
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if curl -fsS "https://crates.io/api/v1/crates/nuviz-cli/$version" -o /dev/null; then
+            echo "nuviz-cli $version is already on crates.io; nothing to do."
+          else
+            cargo publish --locked
+          fi
 
   create-release:
     name: Create GitHub Release
+    needs: [publish-pypi, publish-crates]
     runs-on: ubuntu-latest
-    needs: [build-cli, publish-pypi, publish-crates]
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
+          pattern: bin-*
           path: artifacts
+          merge-multiple: true
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: |
-            artifacts/nuviz-linux-x86_64/nuviz-linux-x86_64
-            artifacts/nuviz-linux-aarch64/nuviz-linux-aarch64
-            artifacts/nuviz-macos-x86_64/nuviz-macos-x86_64
-            artifacts/nuviz-macos-aarch64/nuviz-macos-aarch64
-            artifacts/nuviz-windows-x86_64.exe/nuviz-windows-x86_64.exe
+          fail_on_unmatched_files: true
+          files: artifacts/*

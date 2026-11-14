@@ -88,7 +88,6 @@ experiment_names = []
 for cfg in configs:
     lr = cfg["lr"]
     sh = cfg["sh"]
-    config_hash = cfg["_config_hash"]
 
     for seed in SEEDS:
         random.seed(seed * 1000 + int(lr * 1e6) + sh)
@@ -103,7 +102,9 @@ for cfg in configs:
             config=config,
             snapshot=False,
             seed=seed,
-            config_hash=config_hash,
+            # Hyperparameters power `nuviz matrix` and group the seeds of one
+            # configuration for `nuviz leaderboard --aggregate`.
+            hparams=cfg,
         ) as log:
             for step in range(STEPS_PER_RUN):
                 # Higher lr → faster initial drop but noisier
@@ -189,6 +190,7 @@ nuviz ls {dir_flag} --project {PROJECT}
 nuviz leaderboard {dir_flag} --project {PROJECT} --sort psnr
 nuviz leaderboard {dir_flag} --project {PROJECT} --sort psnr --format latex
 nuviz leaderboard {dir_flag} --project {PROJECT} --sort psnr --format markdown
+nuviz leaderboard {dir_flag} --project {PROJECT} --sort psnr --aggregate
 
 # Per-scene breakdown
 nuviz breakdown {experiment_names[0]} {dir_flag} --project {PROJECT}

@@ -17,7 +17,7 @@ env/
 
 # Rust
 target/
-Cargo.lock
+# cli/Cargo.lock is committed: nuviz is a binary, and CI builds with --locked.
 
 # IDE
 .idea/

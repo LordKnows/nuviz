@@ -5,30 +5,17 @@ use anyhow::{bail, Result};
 use crate::cli::DiffArgs;
 use crate::data::experiment::discover_experiments;
 use crate::data::images::discover_images;
+use crate::data::resolve::resolve;
 use crate::terminal::capability::detect_capabilities;
 use crate::terminal::heatmap::generate_error_heatmap;
 use crate::terminal::render;
 
 pub fn run(args: DiffArgs, base_dir: &Path) -> Result<()> {
     let experiments = discover_experiments(base_dir);
+    let exp_a = resolve(&experiments, &args.experiment_a, args.project.as_deref())?;
+    let exp_b = resolve(&experiments, &args.experiment_b, args.project.as_deref())?;
 
-    let exp_a = experiments
-        .iter()
-        .find(|e| {
-            e.name == args.experiment_a
-                || e.dir.file_name().and_then(|n| n.to_str()) == Some(&args.experiment_a)
-        })
-        .ok_or_else(|| anyhow::anyhow!("Experiment '{}' not found", args.experiment_a))?;
-
-    let exp_b = experiments
-        .iter()
-        .find(|e| {
-            e.name == args.experiment_b
-                || e.dir.file_name().and_then(|n| n.to_str()) == Some(&args.experiment_b)
-        })
-        .ok_or_else(|| anyhow::anyhow!("Experiment '{}' not found", args.experiment_b))?;
-
-    let caps = detect_capabilities();
+    let caps = detect_capabilities(args.protocol);
     let tag = &args.tag;
 
     // Find matching image pairs
@@ -75,15 +62,13 @@ pub fn run(args: DiffArgs, base_dir: &Path) -> Result<()> {
         args.experiment_a, args.experiment_b
     );
 
-    let (max_w, max_h) = render::get_terminal_pixel_size();
-
     if args.heatmap {
         // Generate and display error heatmap
         let img_a = image::open(&img_entry_a.path)?;
         let img_b = image::open(&img_entry_b.path)?;
         let result = generate_error_heatmap(&img_a, &img_b);
 
-        render::render_dynamic_image(&result.image, &caps, max_w, max_h.saturating_sub(128))?;
+        render::show(&result.image, &caps, 8)?;
 
         println!();
         println!("Error Analysis:");
@@ -96,13 +81,7 @@ pub fn run(args: DiffArgs, base_dir: &Path) -> Result<()> {
         }
     } else {
         // Side-by-side comparison
-        render::render_image_pair(
-            &img_entry_a.path,
-            &img_entry_b.path,
-            &caps,
-            max_w,
-            max_h.saturating_sub(128),
-        )?;
+        render::show_pair(&img_entry_a.path, &img_entry_b.path, &caps, 6)?;
 
         // Also compute and display metrics
         let img_a = image::open(&img_entry_a.path)?;

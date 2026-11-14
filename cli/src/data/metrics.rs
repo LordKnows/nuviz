@@ -1,80 +1,178 @@
-use serde::Deserialize;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+//! Wire format of `metrics.jsonl` and row-oriented access to it.
+//!
+//! One JSON object per line:
+//! `{"step": 12, "timestamp": 1700000000.5, "metrics": {"loss": 0.1}, "gpu": {...}}`
+//!
+//! A metric value of `null` is how the Python logger encodes NaN/Inf; it is
+//! read as `f64::NAN` so the rest of the record is preserved. Unknown keys
+//! are ignored for forward compatibility.
 
-/// A single metrics record from a JSONL file.
-#[derive(Debug, Clone, Deserialize)]
+use serde::de::{self, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::fmt;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+/// `name -> value` pairs in file order, with JSON `null` mapped to NaN.
+#[derive(Debug, Default)]
+pub struct Pairs<'a>(pub Vec<(Cow<'a, str>, f64)>);
+
+impl<'de: 'a, 'a> Deserialize<'de> for Pairs<'a> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct PairsVisitor<'a>(std::marker::PhantomData<&'a ()>);
+
+        impl<'de: 'a, 'a> Visitor<'de> for PairsVisitor<'a> {
+            type Value = Pairs<'a>;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("an object mapping names to numbers or null")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::with_capacity(map.size_hint().unwrap_or(8));
+                while let Some(key) = map.next_key::<Cow<'a, str>>()? {
+                    let value = map.next_value::<Option<f64>>()?;
+                    out.push((key, value.unwrap_or(f64::NAN)));
+                }
+                Ok(Pairs(out))
+            }
+        }
+
+        d.deserialize_map(PairsVisitor(std::marker::PhantomData))
+    }
+}
+
+/// Accept `12` as well as `12.0` for the step.
+fn de_step<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Num {
+        Int(u64),
+        Float(f64),
+    }
+    match Num::deserialize(d)? {
+        Num::Int(v) => Ok(v),
+        Num::Float(v) if v >= 0.0 && v.fract() == 0.0 && v < u64::MAX as f64 => Ok(v as u64),
+        Num::Float(v) => Err(de::Error::custom(format!("invalid step {v}"))),
+    }
+}
+
+/// One parsed line, borrowing metric names from the input where possible.
+#[derive(Debug, Deserialize)]
+pub struct RawLine<'a> {
+    #[serde(deserialize_with = "de_step")]
+    pub step: u64,
+    pub timestamp: f64,
+    #[serde(borrow)]
+    pub metrics: Pairs<'a>,
+    #[serde(borrow, default)]
+    pub gpu: Option<Pairs<'a>>,
+}
+
+/// Parse one line of `metrics.jsonl`. Returns `None` for malformed lines.
+pub fn parse_line(line: &str) -> Option<RawLine<'_>> {
+    serde_json::from_str(line).ok()
+}
+
+/// A single metrics record (owned, row-oriented).
+#[derive(Debug, Clone)]
 pub struct MetricRecord {
     pub step: u64,
     pub timestamp: f64,
     pub metrics: HashMap<String, f64>,
-    #[serde(default)]
-    #[allow(dead_code)]
     pub gpu: Option<HashMap<String, f64>>,
+}
+
+impl From<RawLine<'_>> for MetricRecord {
+    fn from(raw: RawLine<'_>) -> Self {
+        let own = |p: Pairs<'_>| p.0.into_iter().map(|(k, v)| (k.into_owned(), v)).collect();
+        MetricRecord {
+            step: raw.step,
+            timestamp: raw.timestamp,
+            metrics: own(raw.metrics),
+            gpu: raw.gpu.map(own),
+        }
+    }
 }
 
 /// Read all metric records from a JSONL file and its rotated segments.
 ///
 /// When rotation is in effect, files are named `metrics.jsonl`, `metrics.1.jsonl`,
 /// `metrics.2.jsonl`, etc. Higher-numbered files contain older data.
-/// Records are returned in chronological order (oldest first).
+/// Records are returned in chronological order (oldest first). Malformed
+/// lines are skipped.
 pub fn read_metrics(path: &Path) -> Vec<MetricRecord> {
-    let mut all_records = Vec::new();
-
-    // Find rotated segments (oldest first)
-    let segments = find_rotated_segments(path);
-    for seg_path in segments.iter().rev() {
-        all_records.extend(read_single_jsonl(seg_path));
-    }
-
-    // Read the main file (newest data)
-    all_records.extend(read_single_jsonl(path));
-
-    all_records
-}
-
-/// Read records from a single JSONL file, skipping malformed lines.
-fn read_single_jsonl(path: &Path) -> Vec<MetricRecord> {
-    let file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return Vec::new(),
-    };
-
-    let reader = BufReader::new(file);
     let mut records = Vec::new();
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+    for_each_line_with_history(path, |line| {
+        if let Some(raw) = parse_line(line) {
+            records.push(raw.into());
         }
-
-        match serde_json::from_str::<MetricRecord>(trimmed) {
-            Ok(record) => records.push(record),
-            Err(e) => {
-                eprintln!("[nuviz] Warning: skipping malformed JSONL line: {e}");
-            }
-        }
-    }
-
+    });
     records
 }
 
-/// Find rotated JSONL segments (e.g., metrics.1.jsonl, metrics.2.jsonl).
-/// Returns paths sorted by number ascending (1, 2, 3, ...).
-fn find_rotated_segments(main_path: &Path) -> Vec<std::path::PathBuf> {
-    let parent = match main_path.parent() {
-        Some(p) => p,
-        None => return Vec::new(),
-    };
+/// Feed every complete line of the rotated segments (oldest first) and then
+/// the main file to `on_line`.
+pub fn for_each_line_with_history(path: &Path, mut on_line: impl FnMut(&str)) {
+    for (_, seg_path) in find_rotated_segments(path).iter().rev() {
+        if let Ok(mut f) = File::open(seg_path) {
+            for_each_line(&mut f, 0, true, &mut on_line);
+        }
+    }
+    if let Ok(mut f) = File::open(path) {
+        for_each_line(&mut f, 0, true, &mut on_line);
+    }
+}
 
+/// Stream lines starting at byte offset `from`, calling `on_line` for every
+/// non-empty one. Returns the number of bytes consumed.
+///
+/// Unless `whole_file` is set, a trailing line without a newline is left
+/// unconsumed: a writer may still be in the middle of it.
+pub fn for_each_line(
+    file: &mut File,
+    from: u64,
+    whole_file: bool,
+    on_line: &mut impl FnMut(&str),
+) -> u64 {
+    if file.seek(SeekFrom::Start(from)).is_err() {
+        return 0;
+    }
+    let mut reader = BufReader::with_capacity(1 << 16, file);
+    let mut buf: Vec<u8> = Vec::with_capacity(512);
+    let mut consumed = 0u64;
+
+    loop {
+        buf.clear();
+        let n = match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        let complete = buf.last() == Some(&b'\n');
+        if !complete && !whole_file {
+            break;
+        }
+        consumed += n as u64;
+        if let Ok(line) = std::str::from_utf8(&buf) {
+            let line = line.trim();
+            if !line.is_empty() {
+                on_line(line);
+            }
+        }
+    }
+    consumed
+}
+
+/// Find rotated JSONL segments (e.g., metrics.1.jsonl, metrics.2.jsonl).
+/// Returns `(number, path)` sorted by number ascending (1, 2, 3, ...).
+/// Higher numbers hold older data.
+pub fn find_rotated_segments(main_path: &Path) -> Vec<(u32, PathBuf)> {
+    let Some(parent) = main_path.parent() else {
+        return Vec::new();
+    };
     let stem = main_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -83,131 +181,28 @@ fn find_rotated_segments(main_path: &Path) -> Vec<std::path::PathBuf> {
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("jsonl");
+    let prefix = format!("{stem}.");
+    let suffix = format!(".{ext}");
 
-    let mut segments: Vec<(u32, std::path::PathBuf)> = Vec::new();
-
-    let entries = match std::fs::read_dir(parent) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
     };
 
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-
-        // Match pattern: stem.N.ext (e.g., metrics.1.jsonl)
-        let prefix = format!("{stem}.");
-        let suffix = format!(".{ext}");
-
-        if let Some(stripped) = name_str.strip_prefix(&prefix) {
-            if let Some(num_str) = stripped.strip_suffix(&suffix) {
-                if let Ok(num) = num_str.parse::<u32>() {
-                    segments.push((num, entry.path()));
-                }
-            }
-        }
-    }
-
+    let mut segments: Vec<(u32, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let num = name
+                .to_str()?
+                .strip_prefix(&prefix)?
+                .strip_suffix(&suffix)?
+                .parse::<u32>()
+                .ok()?;
+            Some((num, entry.path()))
+        })
+        .collect();
     segments.sort_by_key(|(n, _)| *n);
-    segments.into_iter().map(|(_, p)| p).collect()
-}
-
-/// Read only the last record from a JSONL file (efficient for large files).
-#[allow(dead_code)]
-pub fn read_last_record(path: &Path) -> Option<MetricRecord> {
-    let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    let mut last: Option<MetricRecord> = None;
-
-    for line in reader.lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            if let Ok(record) = serde_json::from_str::<MetricRecord>(trimmed) {
-                last = Some(record);
-            }
-        }
-    }
-
-    last
-}
-
-/// Extract the best value for each metric across all records.
-/// "loss", "lpips", "error", "mse", "mae" are minimized; others are maximized.
-pub fn best_metrics(records: &[MetricRecord]) -> HashMap<String, f64> {
-    let mut best: HashMap<String, f64> = HashMap::new();
-
-    for record in records {
-        for (name, &value) in &record.metrics {
-            if value.is_nan() || value.is_infinite() {
-                continue;
-            }
-
-            let is_better = match best.get(name) {
-                None => true,
-                Some(&current) => {
-                    if is_minimize_metric(name) {
-                        value < current
-                    } else {
-                        value > current
-                    }
-                }
-            };
-
-            if is_better {
-                best.insert(name.clone(), value);
-            }
-        }
-    }
-
-    best
-}
-
-/// Alignment mode for multi-experiment comparison.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlignMode {
-    /// Align by step number (default)
-    Step,
-    /// Align by wall-clock time relative to first record
-    WallTime,
-}
-
-/// Extract an aligned series for a given metric.
-///
-/// Returns (x_values, y_values) where x depends on the alignment mode.
-pub fn align_series(
-    records: &[MetricRecord],
-    metric: &str,
-    mode: AlignMode,
-) -> (Vec<f64>, Vec<f64>) {
-    let start_time = records.first().map(|r| r.timestamp).unwrap_or(0.0);
-
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-
-    for record in records {
-        if let Some(&value) = record.metrics.get(metric) {
-            if !value.is_finite() {
-                continue;
-            }
-            let x = match mode {
-                AlignMode::Step => record.step as f64,
-                AlignMode::WallTime => record.timestamp - start_time,
-            };
-            xs.push(x);
-            ys.push(value);
-        }
-    }
-
-    (xs, ys)
-}
-
-pub fn is_minimize_metric(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.contains("loss")
-        || lower.contains("lpips")
-        || lower.contains("error")
-        || lower.contains("mse")
-        || lower.contains("mae")
+    segments
 }
 
 #[cfg(test)]
@@ -280,59 +275,51 @@ mod tests {
     }
 
     #[test]
-    fn test_read_last_record() {
+    fn test_null_metric_is_nan_and_record_kept() {
         let f = write_jsonl(&[
-            r#"{"step":0,"timestamp":1.0,"metrics":{"loss":1.0}}"#,
-            r#"{"step":99,"timestamp":100.0,"metrics":{"loss":0.01}}"#,
+            r#"{"step":0,"timestamp":1.0,"metrics":{"loss":null,"psnr":30.0},"gpu":{"gpu_util":null}}"#,
         ]);
-        let last = read_last_record(f.path()).unwrap();
-        assert_eq!(last.step, 99);
+        let records = read_metrics(f.path());
+        assert_eq!(records.len(), 1);
+        assert!(records[0].metrics["loss"].is_nan());
+        assert_eq!(records[0].metrics["psnr"], 30.0);
+        assert!(records[0].gpu.as_ref().unwrap()["gpu_util"].is_nan());
     }
 
     #[test]
-    fn test_best_metrics_minimize_loss() {
-        let records = vec![
-            MetricRecord {
-                step: 0,
-                timestamp: 1.0,
-                metrics: HashMap::from([("loss".into(), 1.0), ("psnr".into(), 20.0)]),
-                gpu: None,
-            },
-            MetricRecord {
-                step: 1,
-                timestamp: 2.0,
-                metrics: HashMap::from([("loss".into(), 0.5), ("psnr".into(), 25.0)]),
-                gpu: None,
-            },
-            MetricRecord {
-                step: 2,
-                timestamp: 3.0,
-                metrics: HashMap::from([("loss".into(), 0.8), ("psnr".into(), 23.0)]),
-                gpu: None,
-            },
-        ];
-        let best = best_metrics(&records);
-        assert!((best["loss"] - 0.5).abs() < f64::EPSILON);
-        assert!((best["psnr"] - 25.0).abs() < f64::EPSILON);
+    fn test_float_step_accepted_and_unknown_keys_ignored() {
+        let f = write_jsonl(&[
+            r#"{"step":3.0,"timestamp":1.0,"metrics":{"loss":1.0},"future_field":[1,2]}"#,
+            r#"{"step":3.5,"timestamp":1.0,"metrics":{"loss":1.0}}"#,
+            r#"{"step":-1,"timestamp":1.0,"metrics":{"loss":1.0}}"#,
+        ]);
+        let records = read_metrics(f.path());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].step, 3);
     }
 
     #[test]
-    fn test_best_metrics_skips_nan() {
-        let records = vec![
-            MetricRecord {
-                step: 0,
-                timestamp: 1.0,
-                metrics: HashMap::from([("loss".into(), 0.5)]),
-                gpu: None,
-            },
-            MetricRecord {
-                step: 1,
-                timestamp: 2.0,
-                metrics: HashMap::from([("loss".into(), f64::NAN)]),
-                gpu: None,
-            },
-        ];
-        let best = best_metrics(&records);
-        assert!((best["loss"] - 0.5).abs() < f64::EPSILON);
+    fn test_escaped_metric_names() {
+        let f =
+            write_jsonl(&[r#"{"step":0,"timestamp":1.0,"metrics":{"a \"b\"":1.5,"\u5b66":2.0}}"#]);
+        let records = read_metrics(f.path());
+        assert_eq!(records[0].metrics["a \"b\""], 1.5);
+        assert_eq!(records[0].metrics["学"], 2.0);
+    }
+
+    #[test]
+    fn test_for_each_line_leaves_partial_tail() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "one\ntwo\npart").unwrap();
+        let mut file = File::open(f.path()).unwrap();
+        let mut seen = Vec::new();
+        let consumed = for_each_line(&mut file, 0, false, &mut |l: &str| seen.push(l.to_string()));
+        assert_eq!(seen, ["one", "two"]);
+        assert_eq!(consumed, 8);
+
+        let mut seen = Vec::new();
+        let consumed = for_each_line(&mut file, 0, true, &mut |l: &str| seen.push(l.to_string()));
+        assert_eq!(seen, ["one", "two", "part"]);
+        assert_eq!(consumed, 12);
     }
 }

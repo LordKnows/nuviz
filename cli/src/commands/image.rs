@@ -6,36 +6,21 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use crossterm::terminal;
 
 use crate::cli::ImageArgs;
-use crate::data::experiment::discover_experiments;
+use crate::commands::common::find_experiment;
 use crate::data::images::{discover_images, find_latest_image, ImageEntry};
 use crate::terminal::capability::detect_capabilities;
 use crate::terminal::render;
 
 pub fn run(args: ImageArgs, base_dir: &Path) -> Result<()> {
-    let experiments = discover_experiments(base_dir);
-    let exp = experiments
-        .iter()
-        .find(|e| {
-            e.name == args.experiment
-                || e.dir.file_name().and_then(|n| n.to_str()) == Some(&args.experiment)
-        })
-        .ok_or_else(|| anyhow::anyhow!("Experiment '{}' not found", args.experiment))?;
+    let exp = find_experiment(base_dir, &args.experiment, args.project.as_deref())?;
 
-    // Filter by project if specified
-    if let Some(ref proj) = args.project {
-        if exp.project.as_deref() != Some(proj) {
-            bail!("Experiment '{}' not in project '{}'", args.experiment, proj);
-        }
-    }
-
-    let caps = detect_capabilities();
+    let caps = detect_capabilities(args.protocol);
 
     if args.latest {
         let entry = find_latest_image(&exp.dir, args.tag.as_deref())
             .ok_or_else(|| anyhow::anyhow!("No images found"))?;
         print_image_info(&entry);
-        let (max_w, max_h) = render::get_terminal_pixel_size();
-        render::render_image(&entry.path, &caps, max_w, max_h.saturating_sub(64))?;
+        render::show_file(&entry.path, &caps, 4)?;
         return Ok(());
     }
 
@@ -64,8 +49,7 @@ pub fn run(args: ImageArgs, base_dir: &Path) -> Result<()> {
 
     if images.len() == 1 {
         print_image_info(&images[0]);
-        let (max_w, max_h) = render::get_terminal_pixel_size();
-        render::render_image(&images[0].path, &caps, max_w, max_h.saturating_sub(64))?;
+        render::show_file(&images[0].path, &caps, 4)?;
         return Ok(());
     }
 
@@ -113,14 +97,7 @@ fn run_side_by_side(
         .ok_or_else(|| anyhow::anyhow!("No image found: step={}, tag={}", step, tag_b))?;
 
     println!("Step {step}: {tag_a} (left) vs {tag_b} (right)");
-    let (max_w, max_h) = render::get_terminal_pixel_size();
-    render::render_image_pair(
-        &left.path,
-        &right.path,
-        caps,
-        max_w,
-        max_h.saturating_sub(64),
-    )
+    render::show_pair(&left.path, &right.path, caps, 3)
 }
 
 fn browse_images(
@@ -141,8 +118,6 @@ fn browse_loop(
     caps: &crate::terminal::capability::TerminalCapabilities,
     index: &mut usize,
 ) -> Result<()> {
-    let (max_w, max_h) = render::get_terminal_pixel_size();
-
     loop {
         // Clear screen and show current image
         print!("\x1b[2J\x1b[H"); // Clear screen, cursor to top
@@ -160,7 +135,7 @@ fn browse_loop(
         println!("← prev | → next | q quit");
         println!();
 
-        render::render_image(&entry.path, caps, max_w, max_h.saturating_sub(128))?;
+        render::show_file(&entry.path, caps, 5)?;
 
         // Wait for key
         loop {

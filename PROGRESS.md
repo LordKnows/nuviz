@@ -242,3 +242,58 @@ Phase 4 is polish and open-source readiness: experiment management commands, GPU
 - GPU collection gracefully falls back to None when nvidia-smi unavailable
 - Release workflow uses `cross` for Linux aarch64, native runners for macOS ARM
 - Version bumped to 0.3.0 across Python and Rust
+
+---
+
+## Phase 5 Overview
+
+Phase 5 hardens the Python → Rust pipeline and replaces the pieces that did
+not hold up under real data: correctness first, then the data contract, the
+dashboard, and distribution.
+
+## Phase 5A: Correctness
+
+- [x] Writer: single writer thread, value coercion, bounded queue, no concurrent rotation
+- [x] Reader: `null` metrics kept, complete-line tailing, rotation-aware tail, no double load
+- [x] Ranking with a total order; cleanup never removes running or tagged runs
+- [x] LaTeX / CSV / Markdown escaping
+- [x] Cross-language conformance fixtures (`spec/fixtures/`)
+
+## Phase 5B: Data Contract & Data Layer
+
+- [x] `meta.json` written at start: `schema_version`, `run_id`, `status`, `config`
+- [x] `heartbeat.json` and run status (running / done / failed / crashed)
+- [x] `events.jsonl` (alerts, image and point-cloud references)
+- [x] `Logger(hparams=...)`, `define_metric()`, background snapshot, lazy numpy
+- [x] Rust: columnar `MetricStore`, incremental summary cache, lenient meta parsing
+- [x] Rust: one experiment resolver for every command; typed CLI enums
+
+## Phase 5C: Dashboard & Analysis
+
+- [x] One dashboard for `watch` and `compare`; redraw on change
+- [x] Multi-run overlay, metric switching, axes, log scale, smoothing, zoom/pan
+- [x] Runs table (status, speed, ETA), GPU panel, live alerts
+- [x] Image protocol detection by terminal query; correct half-block sizing
+- [x] Leaderboard: best vs final values, steps, multi-seed aggregation
+- [x] Spike alerts on a moving average, direction-aware
+
+## Phase 5D: Distribution
+
+- [x] `nuviz-cli` wheel via maturin; `pip install "nuviz[cli]"`
+- [x] wandb-style `init` / `log` / `finish`
+- [x] Lightning logger and Hugging Face callback
+- [x] Release workflow: version check, tests, checksums, Trusted Publishing
+- [x] Pinned CI toolchain and an MSRV check (Rust 1.88)
+
+## Phase 5 Key Decisions
+
+- The writer thread is the only code that touches `metrics.jsonl`; `flush()` and `close()` signal it and wait
+- A full queue applies brief backpressure, then drops and counts, rather than blocking training or growing without bound
+- `meta.name` equals the directory name, so the name shown is always resolvable
+- Liveness comes from a heartbeat file, not from mutating `meta.json` periodically (the CLI also writes `meta.json`)
+- The summary cache lives in the user's cache directory, never inside experiment directories
+- Finished runs are summarised from `meta.json`; only running / crashed / legacy runs are scanned
+- The dashboard polls on a timer and treats filesystem notifications as an optimisation only
+- Image protocol is queried from the terminal; inline rendering keeps the existing encoders
+- The CLI wheel is a separate distribution (`nuviz-cli`) so the logger stays pure Python
+- Not done: in-dashboard image preview; adapters are tested against stand-ins, not real Lightning / transformers

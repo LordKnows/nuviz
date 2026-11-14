@@ -1,108 +1,140 @@
-use anyhow::{Context, Result};
-use std::collections::BTreeSet;
+use anyhow::Result;
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
-use crate::cli::ExportArgs;
-use crate::data::experiment::{discover_experiments, filter_by_project};
-use crate::data::metrics;
+use crate::cli::{ExportArgs, ExportFormat};
+use crate::commands::common::find_experiment;
+use crate::data::store::MetricStore;
+use crate::output::csv_line;
 
 pub fn run(args: ExportArgs, base_dir: &Path) -> Result<()> {
-    let experiments = discover_experiments(base_dir);
-    let exp = find_experiment(&experiments, &args.experiment, args.project.as_deref())
-        .context(format!("Experiment '{}' not found", args.experiment))?;
+    let exp = find_experiment(base_dir, &args.experiment, args.project.as_deref())?;
 
-    let records = metrics::read_metrics(&exp.dir.join("metrics.jsonl"));
-    if records.is_empty() {
-        println!("No metric records found for '{}'", args.experiment);
+    let store = MetricStore::load(&exp.metrics_path());
+    if store.is_empty() {
+        eprintln!("No metric records found for '{}'", args.experiment);
         return Ok(());
     }
 
-    // Collect all metric names
-    let all_metrics: BTreeSet<String> = records
-        .iter()
-        .flat_map(|r| r.metrics.keys().cloned())
-        .collect();
-
-    // Filter to requested metrics if specified
-    let metric_names: Vec<String> = if let Some(ref filter) = args.metric {
-        let filter_set: BTreeSet<String> = filter.iter().cloned().collect();
-        all_metrics
-            .into_iter()
-            .filter(|n| filter_set.contains(n))
-            .collect()
-    } else {
-        all_metrics.into_iter().collect()
-    };
-
-    match args.format.as_str() {
-        "json" => print_json(&records, &metric_names),
-        _ => print_csv(&records, &metric_names),
+    let names = select_metrics(&store, args.metric.as_deref());
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+    let result = match args.format {
+        ExportFormat::Json => write_json(&store, &names, &mut out),
+        ExportFormat::Csv => write_csv(&store, &names, &mut out),
     }
+    .and_then(|()| out.flush());
 
+    match result {
+        // `nuviz export ... | head` closes the pipe early; that is not an error.
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        other => Ok(other?),
+    }
+}
+
+/// Requested metrics in the order asked for, or every metric sorted by name.
+fn select_metrics(store: &MetricStore, filter: Option<&[String]>) -> Vec<String> {
+    match filter {
+        Some(wanted) => wanted
+            .iter()
+            .filter(|n| store.has_metric(n))
+            .cloned()
+            .collect(),
+        None => store.metric_names().into_iter().map(String::from).collect(),
+    }
+}
+
+/// Shortest decimal representation that round-trips, so exported values
+/// are exactly what was logged.
+fn number(v: f64) -> String {
+    format!("{v}")
+}
+
+fn write_csv(store: &MetricStore, names: &[String], out: &mut impl Write) -> io::Result<()> {
+    let mut header = vec!["step".to_string(), "timestamp".to_string()];
+    header.extend(names.iter().cloned());
+    writeln!(out, "{}", csv_line(&header))?;
+
+    let columns: Vec<&[f64]> = names.iter().filter_map(|n| store.column(n)).collect();
+    for row in 0..store.len() {
+        write!(out, "{},{:.6}", store.steps()[row], store.timestamps()[row])?;
+        for column in &columns {
+            let v = column[row];
+            if v.is_finite() {
+                write!(out, ",{}", number(v))?;
+            } else {
+                write!(out, ",")?; // missing, NaN or Inf
+            }
+        }
+        writeln!(out)?;
+    }
     Ok(())
 }
 
-fn print_csv(records: &[metrics::MetricRecord], metric_names: &[String]) {
-    // Header
-    let mut header = vec!["step".to_string(), "timestamp".to_string()];
-    header.extend(metric_names.iter().cloned());
-    println!("{}", header.join(","));
+fn write_json(store: &MetricStore, names: &[String], out: &mut impl Write) -> io::Result<()> {
+    let columns: Vec<(&String, &[f64])> = names
+        .iter()
+        .filter_map(|n| Some((n, store.column(n)?)))
+        .collect();
 
-    // Rows
-    for record in records {
-        let mut row = vec![record.step.to_string(), format!("{:.6}", record.timestamp)];
-        for name in metric_names {
-            match record.metrics.get(name) {
-                Some(v) if v.is_finite() => row.push(format!("{v:.6}")),
-                _ => row.push(String::new()),
+    writeln!(out, "[")?;
+    for row in 0..store.len() {
+        let mut metrics = serde_json::Map::new();
+        for (name, column) in &columns {
+            if column[row].is_finite() {
+                metrics.insert((*name).clone(), serde_json::Value::from(column[row]));
             }
         }
-        println!("{}", row.join(","));
+        let record = serde_json::json!({
+            "step": store.steps()[row],
+            "timestamp": store.timestamps()[row],
+            "metrics": metrics,
+        });
+        let comma = if row + 1 < store.len() { "," } else { "" };
+        writeln!(out, "  {record}{comma}")?;
     }
+    writeln!(out, "]")
 }
 
-fn print_json(records: &[metrics::MetricRecord], metric_names: &[String]) {
-    println!("[");
-    for (i, record) in records.iter().enumerate() {
-        let mut obj = serde_json::Map::new();
-        obj.insert("step".into(), serde_json::Value::from(record.step));
-        obj.insert(
-            "timestamp".into(),
-            serde_json::Value::from(record.timestamp),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> MetricStore {
+        let mut s = MetricStore::new();
+        s.push_line(r#"{"step":0,"timestamp":1.5,"metrics":{"loss":1.0,"a,b":0.1}}"#);
+        s.push_line(r#"{"step":1,"timestamp":2.5,"metrics":{"loss":null,"psnr":30.123456789}}"#);
+        s
+    }
+
+    #[test]
+    fn test_csv_keeps_rows_with_nan_and_escapes_header() {
+        let s = store();
+        let mut out = Vec::new();
+        write_csv(&s, &select_metrics(&s, None), &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "step,timestamp,\"a,b\",loss,psnr\n0,1.500000,0.1,1,\n1,2.500000,,,30.123456789\n"
         );
-
-        let mut metrics_obj = serde_json::Map::new();
-        for name in metric_names {
-            if let Some(&v) = record.metrics.get(name) {
-                if v.is_finite() {
-                    metrics_obj.insert(name.clone(), serde_json::Value::from(v));
-                }
-            }
-        }
-        obj.insert("metrics".into(), serde_json::Value::Object(metrics_obj));
-
-        let json = serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
-        if i < records.len() - 1 {
-            println!("  {json},");
-        } else {
-            println!("  {json}");
-        }
     }
-    println!("]");
-}
 
-fn find_experiment<'a>(
-    experiments: &'a [crate::data::experiment::Experiment],
-    name: &str,
-    project: Option<&str>,
-) -> Option<&'a crate::data::experiment::Experiment> {
-    if let Some(p) = project {
-        let filtered = filter_by_project(experiments, p);
-        if let Some(exp) = filtered.iter().find(|e| e.name == name) {
-            return experiments
-                .iter()
-                .find(|e| e.name == exp.name && e.dir == exp.dir);
-        }
+    #[test]
+    fn test_metric_filter_keeps_requested_order_and_ignores_unknown() {
+        let s = store();
+        let wanted = vec!["psnr".to_string(), "nope".to_string(), "loss".to_string()];
+        assert_eq!(select_metrics(&s, Some(&wanted)), ["psnr", "loss"]);
     }
-    experiments.iter().find(|e| e.name == name)
+
+    #[test]
+    fn test_json_is_valid_and_omits_non_finite() {
+        let s = store();
+        let mut out = Vec::new();
+        write_json(&s, &select_metrics(&s, None), &mut out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let rows = parsed.as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["metrics"]["loss"], serde_json::json!(1.0));
+        assert!(rows[1]["metrics"].get("loss").is_none());
+        assert_eq!(rows[1]["metrics"]["psnr"], serde_json::json!(30.123456789));
+    }
 }

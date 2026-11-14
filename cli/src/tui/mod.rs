@@ -1,3 +1,3 @@
-pub mod app;
 pub mod chart;
-pub mod widgets;
+pub mod dashboard;
+pub mod terminal;

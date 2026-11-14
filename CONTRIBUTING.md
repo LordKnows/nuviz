@@ -5,7 +5,7 @@
 ### Prerequisites
 
 - Python 3.10+
-- Rust stable (latest)
+- Rust 1.88 or newer (CI lints with a pinned toolchain; see `.github/workflows/ci.yml`)
 - (Optional) nvidia-smi for GPU metrics testing
 
 ### Python Library
@@ -29,17 +29,30 @@ mypy src/nuviz/ --ignore-missing-imports
 cd cli
 cargo build
 cargo test --lib
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo fmt -- --check
 ```
 
 ### Integration Tests
 
-Integration tests require both Python and Rust to be set up:
+These need both the Python package and the Rust toolchain:
 
 ```bash
 cd python && pip install -e ".[dev,images,yaml]"
-cd ../cli && cargo test --test integration_test --test hardening_test
+cd ../cli && cargo test --test integration_test --test hardening_test \
+                        --test conformance_test --test e2e_test
+```
+
+- `conformance_test` parses the golden files in `spec/fixtures/`; the Python
+  suite (`tests/test_conformance.py`) writes the same files byte for byte.
+- `e2e_test` has the Python logger write experiments and then drives the real
+  `nuviz` binary against them.
+
+### Trying the dashboard
+
+```bash
+python examples/demo_train.py &          # writes to ~/.nuviz/experiments
+cd cli && cargo run -- watch
 ```
 
 ## Project Structure
@@ -52,7 +65,8 @@ cli/src/             # Rust CLI application
   tui/               # Terminal UI (ratatui)
   watcher/           # File watching and tail reading
   terminal/          # Terminal capability detection and image rendering
-docs/                # Design docs and usage guide
+spec/fixtures/       # Golden files shared by the Python and Rust test suites
+docs/                # Usage guide, data format, design doc
 examples/            # Demo scripts
 ```
 
@@ -71,7 +85,28 @@ examples/            # Demo scripts
 
 ## Data Format
 
-Python writes, Rust reads. If changing the data format:
-- Update the Python writer and Rust parser in the same PR
-- Ensure backwards compatibility (new fields should use `#[serde(default)]` in Rust)
-- Add integration tests covering the new format
+Python writes, Rust reads. The contract is [docs/FORMAT.md](docs/FORMAT.md).
+If you change it:
+
+- Update `docs/FORMAT.md`, the Python writer and the Rust reader in the same PR.
+- Update `spec/fixtures/` so both test suites cover the change.
+- Keep old data readable: new keys must be optional on the reader side, and a
+  change to the meaning of an existing key needs a `schema_version` bump.
+
+## Releasing
+
+Releases are cut by pushing a `v<version>` tag; `.github/workflows/release.yml`
+tests, builds and publishes. The workflow refuses to run unless the tag
+matches the version in `cli/Cargo.toml`, `python/pyproject.toml` and
+`python/src/nuviz/__init__.py`.
+
+One-time setup:
+
+- **PyPI** uses Trusted Publishing, so no API token is stored. On pypi.org,
+  add a trusted publisher to both projects, `nuviz` and `nuviz-cli`
+  (repository `LordKnows/nuviz`, workflow `release.yml`, environment `pypi`),
+  and create a `pypi` environment in the GitHub repository settings.
+- **crates.io** uses the `CARGO_REGISTRY_TOKEN` repository secret.
+
+A failed publish fails the workflow. Re-running it is safe: versions that are
+already published are skipped.

@@ -6,7 +6,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+
+def _numpy() -> Any:
+    """Import numpy on first use so ``import nuviz`` works without it."""
+    try:
+        import numpy as np
+    except ImportError:
+        raise ImportError(
+            "numpy is required for image logging. Install with: pip install nuviz[images]"
+        ) from None
+    return np
 
 
 def _to_numpy(data: Any) -> Any:
@@ -16,6 +25,8 @@ def _to_numpy(data: Any) -> Any:
         - numpy array (float 0-1 or uint8)
         - torch tensor (auto-detach and convert)
     """
+    np = _numpy()
+
     # Handle torch tensors via duck typing
     if type(data).__module__.startswith("torch"):
         data = data.detach().cpu().numpy()
@@ -67,6 +78,7 @@ def save_image(
 
 def _apply_colormap(data: Any, cmap: str) -> Any:
     """Apply a simple colormap to single-channel data."""
+    np = _numpy()
     # Normalize to 0-255
     if data.dtype != np.uint8:
         dmin, dmax = data.min(), data.max()
