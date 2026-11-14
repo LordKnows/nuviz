@@ -100,10 +100,7 @@ impl App {
             return None;
         }
 
-        let lower = metric.to_lowercase();
-        let minimize = lower.contains("loss") || lower.contains("lpips") || lower.contains("error");
-
-        if minimize {
+        if crate::data::metrics::is_minimize_metric(metric) {
             series.into_iter().reduce(f64::min)
         } else {
             series.into_iter().reduce(f64::max)

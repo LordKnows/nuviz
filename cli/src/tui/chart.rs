@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(format_number(0.0), "0");
         assert_eq!(format_number(1500000.0), "1.5M");
         assert_eq!(format_number(2500.0), "2.5k");
-        assert_eq!(format_number(3.14), "3.14");
+        assert_eq!(format_number(3.25), "3.25");
         assert_eq!(format_number(0.0523), "0.0523");
     }
 }

@@ -1,7 +1,6 @@
 //! Error handling and edge case tests for the Rust CLI data layer.
 
 use std::fs;
-use std::path::Path;
 
 #[test]
 fn test_empty_jsonl_file() {

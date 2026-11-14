@@ -299,6 +299,10 @@ pub struct CleanupArgs {
     /// Actually delete (default is dry-run)
     #[arg(long)]
     pub force: bool,
+
+    /// Also consider tagged experiments for removal (kept by default)
+    #[arg(long)]
+    pub include_tagged: bool,
 }
 
 #[derive(Parser)]

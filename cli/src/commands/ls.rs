@@ -74,7 +74,7 @@ pub fn run(args: LsArgs, base_dir: &Path) -> Result<()> {
 fn sort_experiments(experiments: &mut [Experiment], sort_by: &str) {
     match sort_by {
         "name" => experiments.sort_by(|a, b| a.name.cmp(&b.name)),
-        "steps" => experiments.sort_by(|a, b| b.total_steps.cmp(&a.total_steps)),
+        "steps" => experiments.sort_by_key(|e| std::cmp::Reverse(e.total_steps)),
         _ => experiments.sort_by(|a, b| b.start_time.cmp(&a.start_time)),
     }
 }

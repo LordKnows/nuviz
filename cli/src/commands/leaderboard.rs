@@ -5,6 +5,8 @@ use std::path::Path;
 
 use crate::cli::LeaderboardArgs;
 use crate::data::experiment::{discover_experiments, filter_by_project, Experiment};
+use crate::data::metrics::{cmp_best_first, is_minimize_metric};
+use crate::output::{csv_line, latex_escape, markdown_cell};
 
 pub fn run(args: LeaderboardArgs, base_dir: &Path) -> Result<()> {
     let mut experiments = discover_experiments(base_dir);
@@ -31,25 +33,14 @@ pub fn run(args: LeaderboardArgs, base_dir: &Path) -> Result<()> {
         .unwrap_or_else(|| metric_names.iter().next().cloned().unwrap_or_default());
 
     // Sort experiments by the chosen metric
+    // Best first by default; experiments without the metric always rank last.
+    let minimize = is_minimize_metric(&sort_metric) ^ args.asc;
     experiments.sort_by(|a, b| {
-        let va = a
-            .best_metrics
-            .get(&sort_metric)
-            .copied()
-            .unwrap_or(f64::NAN);
-        let vb = b
-            .best_metrics
-            .get(&sort_metric)
-            .copied()
-            .unwrap_or(f64::NAN);
-
-        if is_minimize_metric(&sort_metric) ^ args.asc {
-            // minimize + desc => sort ascending (best=lowest first)
-            // minimize + asc => sort descending
-            va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
-        } else {
-            vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
-        }
+        cmp_best_first(
+            a.best_metrics.get(&sort_metric).copied(),
+            b.best_metrics.get(&sort_metric).copied(),
+            minimize,
+        )
     });
 
     // Apply --top limit
@@ -158,7 +149,7 @@ fn print_markdown(
     println!("| {} |", separator.join(" | "));
 
     for (i, exp) in experiments.iter().enumerate() {
-        let mut row = vec![format!("{}", i + 1), exp.name.clone()];
+        let mut row = vec![format!("{}", i + 1), markdown_cell(&exp.name)];
         for name in metric_names {
             match exp.best_metrics.get(name) {
                 Some(&v) => {
@@ -198,14 +189,14 @@ fn print_latex(
         } else {
             "$\\uparrow$"
         };
-        header.push(format!("{name} {arrow}"));
+        header.push(format!("{} {arrow}", latex_escape(name)));
     }
     header.push("Status".into());
     println!("{} \\\\", header.join(" & "));
     println!("\\midrule");
 
     for exp in experiments {
-        let mut row = vec![exp.name.replace('_', "\\_")];
+        let mut row = vec![latex_escape(&exp.name)];
         for name in metric_names {
             match exp.best_metrics.get(name) {
                 Some(&v) => {
@@ -221,7 +212,7 @@ fn print_latex(
                 None => row.push("-".into()),
             }
         }
-        row.push(exp.status.clone());
+        row.push(latex_escape(&exp.status));
         println!("{} \\\\", row.join(" & "));
     }
 
@@ -236,7 +227,7 @@ fn print_csv(experiments: &[Experiment], metric_names: &BTreeSet<String>) {
         header.push(name.clone());
     }
     header.push("status".to_string());
-    println!("{}", header.join(","));
+    println!("{}", csv_line(&header));
 
     for (i, exp) in experiments.iter().enumerate() {
         let mut row = vec![format!("{}", i + 1), exp.name.clone()];
@@ -247,7 +238,7 @@ fn print_csv(experiments: &[Experiment], metric_names: &BTreeSet<String>) {
             }
         }
         row.push(exp.status.clone());
-        println!("{}", row.join(","));
+        println!("{}", csv_line(&row));
     }
 }
 
@@ -332,13 +323,4 @@ fn find_second_best_per_metric(
     }
 
     second
-}
-
-fn is_minimize_metric(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.contains("loss")
-        || lower.contains("lpips")
-        || lower.contains("error")
-        || lower.contains("mse")
-        || lower.contains("mae")
 }

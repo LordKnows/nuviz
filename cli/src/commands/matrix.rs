@@ -9,6 +9,7 @@ use crate::data::experiment::{
     discover_experiments, filter_by_project, group_by_config, Experiment,
 };
 use crate::data::metrics::is_minimize_metric;
+use crate::output::{csv_line, latex_escape};
 
 pub fn run(args: MatrixArgs, base_dir: &Path) -> Result<()> {
     let mut experiments = discover_experiments(base_dir);
@@ -237,19 +238,22 @@ fn print_latex(
 
     println!("\\begin{{table}}[t]");
     println!("\\centering");
-    println!("\\caption{{Ablation matrix: {metric} {arrow}.}}");
+    println!(
+        "\\caption{{Ablation matrix: {} {arrow}.}}",
+        latex_escape(metric)
+    );
     println!("\\begin{{tabular}}{{{cols}}}");
     println!("\\toprule");
 
-    let mut header = vec![rows_param.replace('_', "\\_")];
+    let mut header = vec![latex_escape(rows_param)];
     for cv in col_values {
-        header.push(cv.replace('_', "\\_"));
+        header.push(latex_escape(cv));
     }
     println!("{} \\\\", header.join(" & "));
     println!("\\midrule");
 
     for rv in row_values {
-        let mut row = vec![rv.replace('_', "\\_")];
+        let mut row = vec![latex_escape(rv)];
         for cv in col_values {
             if let Some(values) = matrix.get(&(rv.clone(), cv.clone())) {
                 let (mean, display) = cell_value(values);
@@ -323,7 +327,7 @@ fn print_csv(
     for cv in col_values {
         header.push(cv.clone());
     }
-    println!("{}", header.join(","));
+    println!("{}", csv_line(&header));
 
     for rv in row_values {
         let mut row = vec![rv.clone()];
@@ -335,7 +339,7 @@ fn print_csv(
                 row.push(String::new());
             }
         }
-        println!("{}", row.join(","));
+        println!("{}", csv_line(&row));
     }
 }
 

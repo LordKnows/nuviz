@@ -136,14 +136,6 @@ pub fn run(args: CompareArgs, base_dir: &Path) -> Result<()> {
         app.metric_names = vec![metric.clone()];
     }
 
-    // Load existing data
-    for (name, dir) in experiment_names.iter().zip(&experiment_dirs) {
-        let records = metrics::read_metrics(&dir.join("metrics.jsonl"));
-        if !records.is_empty() {
-            app.push_records(name, records);
-        }
-    }
-
     // If user specified a metric, find its index
     if let Some(ref metric) = args.metric {
         if let Some(pos) = app.metric_names.iter().position(|m| m == metric) {
@@ -348,11 +340,7 @@ fn render_legend(frame: &mut ratatui::Frame, app: &CompareApp, area: ratatui::la
         .border_style(Style::default().fg(Color::DarkGray));
 
     let metric = app.current_metric();
-    let minimize = metric.to_lowercase().contains("loss")
-        || metric.to_lowercase().contains("lpips")
-        || metric.to_lowercase().contains("error")
-        || metric.to_lowercase().contains("mse")
-        || metric.to_lowercase().contains("mae");
+    let minimize = metrics::is_minimize_metric(metric);
 
     let mut lines: Vec<Line> = Vec::new();
 

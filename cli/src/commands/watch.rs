@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use crate::cli::WatchArgs;
 use crate::data::experiment::{discover_experiments, filter_by_project};
-use crate::data::metrics;
 use crate::tui::app::{App, Panel};
 use crate::tui::widgets::{self, BrailleChart};
 use crate::watcher::file_watcher;
@@ -37,15 +36,9 @@ pub fn run(args: WatchArgs, base_dir: &Path) -> Result<()> {
         })
         .collect();
 
-    // Load existing data
+    // The tail reader behind each watcher is the single source of records
+    // (history included), so nothing is pre-loaded here.
     let mut app = App::new(experiment_names.clone());
-    for (name, dir) in experiment_names.iter().zip(&experiment_dirs) {
-        let jsonl_path = dir.join("metrics.jsonl");
-        let records = metrics::read_metrics(&jsonl_path);
-        if !records.is_empty() {
-            app.push_records(name, records);
-        }
-    }
 
     // Set up file watchers
     let watchers: Vec<_> = experiment_dirs

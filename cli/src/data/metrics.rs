@@ -9,10 +9,36 @@ use std::path::Path;
 pub struct MetricRecord {
     pub step: u64,
     pub timestamp: f64,
+    /// Metric values. A JSON `null` (how the Python logger encodes NaN/Inf)
+    /// is read as `f64::NAN` so the rest of the record is preserved.
+    #[serde(deserialize_with = "de_nullable_map")]
     pub metrics: HashMap<String, f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_opt_nullable_map")]
     #[allow(dead_code)]
     pub gpu: Option<HashMap<String, f64>>,
+}
+
+fn de_nullable_map<'de, D>(d: D) -> Result<HashMap<String, f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: HashMap<String, Option<f64>> = HashMap::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        .map(|(k, v)| (k, v.unwrap_or(f64::NAN)))
+        .collect())
+}
+
+fn de_opt_nullable_map<'de, D>(d: D) -> Result<Option<HashMap<String, f64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<HashMap<String, Option<f64>>> = Option::deserialize(d)?;
+    Ok(raw.map(|m| {
+        m.into_iter()
+            .map(|(k, v)| (k, v.unwrap_or(f64::NAN)))
+            .collect()
+    }))
 }
 
 /// Read all metric records from a JSONL file and its rotated segments.
@@ -25,7 +51,7 @@ pub fn read_metrics(path: &Path) -> Vec<MetricRecord> {
 
     // Find rotated segments (oldest first)
     let segments = find_rotated_segments(path);
-    for seg_path in segments.iter().rev() {
+    for (_, seg_path) in segments.iter().rev() {
         all_records.extend(read_single_jsonl(seg_path));
     }
 
@@ -68,8 +94,9 @@ fn read_single_jsonl(path: &Path) -> Vec<MetricRecord> {
 }
 
 /// Find rotated JSONL segments (e.g., metrics.1.jsonl, metrics.2.jsonl).
-/// Returns paths sorted by number ascending (1, 2, 3, ...).
-fn find_rotated_segments(main_path: &Path) -> Vec<std::path::PathBuf> {
+/// Returns `(number, path)` sorted by number ascending (1, 2, 3, ...).
+/// Higher numbers hold older data.
+pub fn find_rotated_segments(main_path: &Path) -> Vec<(u32, std::path::PathBuf)> {
     let parent = match main_path.parent() {
         Some(p) => p,
         None => return Vec::new(),
@@ -109,7 +136,7 @@ fn find_rotated_segments(main_path: &Path) -> Vec<std::path::PathBuf> {
     }
 
     segments.sort_by_key(|(n, _)| *n);
-    segments.into_iter().map(|(_, p)| p).collect()
+    segments
 }
 
 /// Read only the last record from a JSONL file (efficient for large files).
@@ -199,6 +226,26 @@ pub fn align_series(
     }
 
     (xs, ys)
+}
+
+/// Total order that ranks the best value first and missing / non-finite
+/// values last, regardless of direction.
+pub fn cmp_best_first(a: Option<f64>, b: Option<f64>, minimize: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let a = a.filter(|v| v.is_finite());
+    let b = b.filter(|v| v.is_finite());
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => {
+            if minimize {
+                x.total_cmp(&y)
+            } else {
+                y.total_cmp(&x)
+            }
+        }
+    }
 }
 
 pub fn is_minimize_metric(name: &str) -> bool {
@@ -314,6 +361,32 @@ mod tests {
         let best = best_metrics(&records);
         assert!((best["loss"] - 0.5).abs() < f64::EPSILON);
         assert!((best["psnr"] - 25.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_null_metric_is_nan_and_record_kept() {
+        let f = write_jsonl(&[
+            r#"{"step":0,"timestamp":1.0,"metrics":{"loss":null,"psnr":30.0},"gpu":{"gpu_util":null}}"#,
+        ]);
+        let records = read_metrics(f.path());
+        assert_eq!(records.len(), 1);
+        assert!(records[0].metrics["loss"].is_nan());
+        assert_eq!(records[0].metrics["psnr"], 30.0);
+        assert!(records[0].gpu.as_ref().unwrap()["gpu_util"].is_nan());
+    }
+
+    #[test]
+    fn test_cmp_best_first_is_total_and_puts_missing_last() {
+        let mut vals = [Some(0.3), None, Some(0.1), Some(f64::NAN), Some(0.2), None];
+        vals.sort_by(|a, b| cmp_best_first(*a, *b, true));
+        assert_eq!(vals[0], Some(0.1));
+        assert_eq!(vals[1], Some(0.2));
+        assert_eq!(vals[2], Some(0.3));
+        assert!(vals[3..].iter().all(|v| v.is_none_or(|x| x.is_nan())));
+
+        let mut vals = [Some(1.0), None, Some(3.0), Some(2.0)];
+        vals.sort_by(|a, b| cmp_best_first(*a, *b, false));
+        assert_eq!(vals, [Some(3.0), Some(2.0), Some(1.0), None]);
     }
 
     #[test]

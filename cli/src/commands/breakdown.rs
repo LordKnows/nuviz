@@ -7,6 +7,7 @@ use crate::cli::BreakdownArgs;
 use crate::data::experiment::{discover_experiments, filter_by_project, Experiment};
 use crate::data::metrics::is_minimize_metric;
 use crate::data::scenes::{read_scenes, scenes_by_name, SceneRecord};
+use crate::output::latex_escape;
 
 pub fn run(args: BreakdownArgs, base_dir: &Path) -> Result<()> {
     let experiments = discover_experiments(base_dir);
@@ -141,7 +142,7 @@ fn print_latex(
     println!("\\centering");
     println!(
         "\\caption{{Per-scene quantitative results for {}.}}",
-        exp_name.replace('_', "\\_")
+        latex_escape(exp_name)
     );
     println!("\\label{{tab:per_scene}}");
     println!("\\begin{{tabular}}{{{cols}}}");
@@ -154,7 +155,7 @@ fn print_latex(
         } else {
             "$\\uparrow$"
         };
-        header.push(format!("{name} {arrow}"));
+        header.push(format!("{} {arrow}", latex_escape(name)));
     }
     println!("{} \\\\", header.join(" & "));
     println!("\\midrule");

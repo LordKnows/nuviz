@@ -20,7 +20,6 @@ pub struct Experiment {
     pub seed: Option<u64>,
     pub config_hash: Option<String>,
     pub config: Option<serde_json::Value>,
-    #[allow(dead_code)]
     pub tags: Vec<String>,
 }
 

@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::cli::ExportArgs;
 use crate::data::experiment::{discover_experiments, filter_by_project};
 use crate::data::metrics;
+use crate::output::csv_line;
 
 pub fn run(args: ExportArgs, base_dir: &Path) -> Result<()> {
     let experiments = discover_experiments(base_dir);
@@ -46,7 +47,7 @@ fn print_csv(records: &[metrics::MetricRecord], metric_names: &[String]) {
     // Header
     let mut header = vec!["step".to_string(), "timestamp".to_string()];
     header.extend(metric_names.iter().cloned());
-    println!("{}", header.join(","));
+    println!("{}", csv_line(&header));
 
     // Rows
     for record in records {

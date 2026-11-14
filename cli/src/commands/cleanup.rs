@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::cli::CleanupArgs;
 use crate::data::experiment::{discover_experiments, filter_by_project};
+use crate::data::metrics::{cmp_best_first, is_minimize_metric};
 
 pub fn run(args: CleanupArgs, base_dir: &Path) -> Result<()> {
     let experiments = discover_experiments(base_dir);
@@ -21,26 +22,45 @@ pub fn run(args: CleanupArgs, base_dir: &Path) -> Result<()> {
     let metric = args.metric.as_deref().unwrap_or("loss");
     let keep = args.keep_top.unwrap_or(5);
 
-    // Sort by metric (lower is better for loss-like, higher for others)
-    let minimize = metric.contains("loss")
-        || metric.contains("error")
-        || metric.contains("lpips")
-        || metric.contains("mse")
-        || metric.contains("mae");
-
-    targets.sort_by(|a, b| {
-        let va = a.best_metrics.get(metric).copied().unwrap_or(f64::NAN);
-        let vb = b.best_metrics.get(metric).copied().unwrap_or(f64::NAN);
-        if minimize {
-            va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
+    // Never touch experiments that are still running, and keep anything the
+    // user tagged unless they explicitly opt in.
+    let before = targets.len();
+    let mut protected_running = 0usize;
+    let mut protected_tagged = 0usize;
+    targets.retain(|exp| {
+        if exp.status == "running" {
+            protected_running += 1;
+            false
+        } else if !args.include_tagged && !exp.tags.is_empty() {
+            protected_tagged += 1;
+            false
         } else {
-            vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
+            true
         }
+    });
+    if protected_running + protected_tagged > 0 {
+        println!(
+            "Protected {} of {} experiments ({} running, {} tagged).",
+            before - targets.len(),
+            before,
+            protected_running,
+            protected_tagged
+        );
+    }
+
+    // Best first; experiments without the metric rank last (removed first).
+    let minimize = is_minimize_metric(metric);
+    targets.sort_by(|a, b| {
+        cmp_best_first(
+            a.best_metrics.get(metric).copied(),
+            b.best_metrics.get(metric).copied(),
+            minimize,
+        )
     });
 
     if targets.len() <= keep {
         println!(
-            "Only {} experiments found, keeping all (threshold: {}).",
+            "Only {} removable experiments found, keeping all (threshold: {}).",
             targets.len(),
             keep
         );

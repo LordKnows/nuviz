@@ -195,11 +195,7 @@ fn print_histogram(values: &[f32], bins: usize, min: f32, max: f32) {
     for (i, &count) in counts.iter().enumerate() {
         let lo = min + i as f32 * bin_width;
         let hi = lo + bin_width;
-        let bar_len = if max_count > 0 {
-            (count * bar_max_width) / max_count
-        } else {
-            0
-        };
+        let bar_len = (count * bar_max_width).checked_div(max_count).unwrap_or(0);
         let bar: String = "█".repeat(bar_len);
         let pct = count as f64 / values.len() as f64 * 100.0;
         println!(

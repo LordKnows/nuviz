@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod data;
+mod output;
 mod terminal;
 mod tui;
 mod watcher;
