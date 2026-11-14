@@ -48,6 +48,8 @@ class EnvironmentSnapshot:
     pytorch_version: str | None = None
     hostname: str | None = None
     start_time: str | None = None
+    argv: list[str] = field(default_factory=list)
+    cwd: str | None = None
 
 
 @dataclass(slots=True, frozen=True)

@@ -29,8 +29,10 @@ Issues = "https://github.com/LordKnows/nuviz/issues"
 Documentation = "https://github.com/LordKnows/nuviz/blob/main/docs/USAGE.md"
 
 [project.optional-dependencies]
-images = ["Pillow>=9.0"]
+images = ["Pillow>=9.0", "numpy>=1.24"]
+pointcloud = ["numpy>=1.24"]
 yaml = ["PyYAML>=6.0"]
+all = ["Pillow>=9.0", "numpy>=1.24", "PyYAML>=6.0"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",

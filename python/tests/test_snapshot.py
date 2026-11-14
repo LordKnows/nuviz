@@ -32,8 +32,7 @@ class TestCaptureSnapshot:
     def test_captures_all_fields(self, mock_run: MagicMock) -> None:
         mock_run.side_effect = lambda cmd, **kw: {
             ("git", "rev-parse", "HEAD"): "abc123",
-            ("git", "diff", "--quiet"): "",  # clean
-            ("pip", "freeze"): "numpy==1.24.0\ntorch==2.0.0",
+            ("git", "status", "--porcelain", "--untracked-files=no"): "",  # clean
             ("nvcc", "--version"): "Cuda compilation tools, release 12.1",
             ("nvidia-smi", "--query-gpu=name", "--format=csv,noheader"): "RTX 4090",
         }.get(tuple(cmd))
@@ -41,7 +40,8 @@ class TestCaptureSnapshot:
         snapshot = capture_snapshot()
         assert snapshot.git_hash == "abc123"
         assert snapshot.git_dirty is False
-        assert "numpy==1.24.0" in snapshot.pip_packages
+        assert any(p.lower().startswith("pytest==") for p in snapshot.pip_packages)
+        assert snapshot.argv
         assert snapshot.gpu_model == "RTX 4090"
         assert snapshot.python_version is not None
         assert snapshot.hostname is not None
@@ -51,7 +51,7 @@ class TestCaptureSnapshot:
     def test_dirty_repo_detected(self, mock_run: MagicMock) -> None:
         mock_run.side_effect = lambda cmd, **kw: {
             ("git", "rev-parse", "HEAD"): "abc123",
-            ("git", "diff", "--quiet"): None,  # non-zero exit = dirty
+            ("git", "status", "--porcelain", "--untracked-files=no"): " M train.py",
         }.get(tuple(cmd))
 
         snapshot = capture_snapshot()

@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
-import struct
-import sys
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+from nuviz._util import warn
+
+
+def _numpy() -> Any:
+    """Import numpy on first use so ``import nuviz`` works without it."""
+    try:
+        import numpy as np
+    except ImportError:
+        raise ImportError(
+            "numpy is required for point cloud logging. "
+            "Install with: pip install nuviz[pointcloud]"
+        ) from None
+    return np
 
 
 def _to_numpy_float32(data: Any) -> Any:
     """Convert input to numpy float32 array, handling torch tensors."""
     if data is None:
         return None
+    np = _numpy()
 
     if type(data).__module__.startswith("torch"):
         data = data.detach().cpu().numpy()
@@ -28,6 +39,7 @@ def _to_numpy_uint8(data: Any) -> Any:
     """Convert color data to uint8. Accepts float [0,1] or uint8."""
     if data is None:
         return None
+    np = _numpy()
 
     if type(data).__module__.startswith("torch"):
         data = data.detach().cpu().numpy()
@@ -95,7 +107,7 @@ def save_pointcloud(
         return filepath
 
     except Exception as e:
-        print(f"[nuviz] Warning: failed to save pointcloud '{tag}': {e}", file=sys.stderr)
+        warn(f"failed to save pointcloud '{tag}': {e}")
         return None
 
 
@@ -131,17 +143,26 @@ def _write_binary_ply(
     header_lines.append("end_header")
     header = "\n".join(header_lines) + "\n"
 
+    # Pack all vertices into one structured array and write it in a single
+    # call; a per-point Python loop is ~30x slower at a million points.
+    np = _numpy()
+    fields: list[tuple[str, str]] = [("x", "<f4"), ("y", "<f4"), ("z", "<f4")]
+    if colors is not None:
+        fields += [("red", "u1"), ("green", "u1"), ("blue", "u1")]
+    if opacities is not None:
+        fields.append(("opacity", "<f4"))
+
+    vertices = np.empty(num_points, dtype=np.dtype(fields))
+    vertices["x"], vertices["y"], vertices["z"] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    if colors is not None:
+        vertices["red"], vertices["green"], vertices["blue"] = (
+            colors[:, 0],
+            colors[:, 1],
+            colors[:, 2],
+        )
+    if opacities is not None:
+        vertices["opacity"] = opacities
+
     with open(path, "wb") as f:
         f.write(header.encode("ascii"))
-
-        for i in range(num_points):
-            # xyz (3 x float32)
-            f.write(struct.pack("<fff", xyz[i, 0], xyz[i, 1], xyz[i, 2]))
-
-            # colors (3 x uint8)
-            if colors is not None:
-                f.write(struct.pack("<BBB", colors[i, 0], colors[i, 1], colors[i, 2]))
-
-            # opacity (float32)
-            if opacities is not None:
-                f.write(struct.pack("<f", opacities[i]))
+        f.write(vertices.tobytes())

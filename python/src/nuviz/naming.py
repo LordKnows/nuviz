@@ -34,22 +34,24 @@ def resolve_experiment_dir(
     Returns:
         Path to the created experiment directory.
     """
-    resolved_name = _sanitize_name(name) if name else _generate_timestamp_name()
+    resolved_name = (_sanitize_name(name) if name else "") or _generate_timestamp_name()
 
     if project:
         experiment_dir = base_dir / _sanitize_name(project) / resolved_name
     else:
         experiment_dir = base_dir / resolved_name
 
-    # Handle collision: append _1, _2, etc.
-    if experiment_dir.exists():
-        suffix = 1
-        while True:
-            candidate = experiment_dir.parent / f"{resolved_name}_{suffix}"
-            if not candidate.exists():
-                experiment_dir = candidate
-                break
-            suffix += 1
+    experiment_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    experiment_dir.mkdir(parents=True, exist_ok=True)
-    return experiment_dir
+    # Claim the directory atomically. On collision append _1, _2, ... so two
+    # runs started at the same moment with the same name can never share a
+    # directory (and interleave their metrics).
+    candidate = experiment_dir
+    suffix = 0
+    while True:
+        try:
+            candidate.mkdir(exist_ok=False)
+            return candidate
+        except FileExistsError:
+            suffix += 1
+            candidate = experiment_dir.parent / f"{resolved_name}_{suffix}"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -28,18 +29,33 @@ def _run_command(cmd: list[str], timeout: float = 5.0) -> str | None:
     return None
 
 
+def _installed_packages() -> list[str]:
+    """List installed distributions as ``name==version`` without spawning pip."""
+    try:
+        from importlib import metadata
+
+        seen: dict[str, str] = {}
+        for dist in metadata.distributions():
+            name = dist.metadata["Name"] if dist.metadata else None
+            if name:
+                seen.setdefault(str(name), str(dist.version))
+        return sorted((f"{n}=={v}" for n, v in seen.items()), key=str.lower)
+    except Exception:
+        return []
+
+
 def capture_snapshot() -> EnvironmentSnapshot:
     """Capture current environment. All fields are best-effort."""
-    # Git info
+    # Git info. "Dirty" means tracked files differ from HEAD (staged or not);
+    # untracked files are ignored because output directories would make
+    # nearly every ML repository look dirty.
     git_hash = _run_command(["git", "rev-parse", "HEAD"])
     git_dirty: bool | None = None
     if git_hash is not None:
-        dirty_result = _run_command(["git", "diff", "--quiet"])
-        git_dirty = dirty_result is None  # non-zero exit = dirty
+        status = _run_command(["git", "status", "--porcelain", "--untracked-files=no"])
+        git_dirty = None if status is None else bool(status)
 
-    # Pip packages
-    pip_output = _run_command(["pip", "freeze"])
-    pip_packages = pip_output.splitlines() if pip_output else []
+    pip_packages = _installed_packages()
 
     # CUDA version
     cuda_version = _run_command(["nvcc", "--version"])
@@ -51,17 +67,19 @@ def capture_snapshot() -> EnvironmentSnapshot:
                 break
 
     # GPU model
-    gpu_model = _run_command(
-        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]
-    )
+    gpu_model = _run_command(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
 
-    # PyTorch version (dynamic import)
+    # PyTorch version — only if the training script already imported torch.
+    # Importing it here would cost seconds and is never necessary.
     pytorch_version: str | None = None
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        pytorch_version = getattr(torch, "__version__", None)
+
     try:
-        import torch
-        pytorch_version = torch.__version__
-    except ImportError:
-        pass
+        cwd: str | None = os.getcwd()
+    except OSError:
+        cwd = None
 
     return EnvironmentSnapshot(
         git_hash=git_hash,
@@ -73,6 +91,8 @@ def capture_snapshot() -> EnvironmentSnapshot:
         pytorch_version=pytorch_version,
         hostname=gethostname(),
         start_time=datetime.now(timezone.utc).isoformat(),
+        argv=list(sys.argv),
+        cwd=cwd,
     )
 
 
