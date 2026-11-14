@@ -154,9 +154,3 @@ fn test_experiment_with_meta_but_no_metrics() {
     assert_eq!(experiments.len(), 1);
     assert_eq!(experiments[0].status, Status::Crashed);
 }
-
-#[test]
-fn test_best_metrics_empty_records() {
-    let best = nuviz_cli::data::metrics::best_metrics(&[]);
-    assert!(best.is_empty());
-}

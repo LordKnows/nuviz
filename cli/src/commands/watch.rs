@@ -1,152 +1,59 @@
-use anyhow::{Context, Result};
-use crossterm::{
-    event::{self, Event, KeyEventKind},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use ratatui::{
-    layout::{Constraint, Direction, Layout},
-    Terminal,
-};
-use std::io;
+use anyhow::Result;
 use std::path::Path;
-use std::time::Duration;
 
 use crate::cli::WatchArgs;
-use crate::data::experiment::{discover_experiments, filter_by_project};
+use crate::commands::common::{display_labels, load_scope};
+use crate::data::experiment::{discover_experiments, Experiment};
 use crate::data::resolve::resolve_many;
-use crate::tui::app::{App, Panel};
-use crate::tui::widgets::{self, BrailleChart};
-use crate::watcher::file_watcher;
+use crate::data::store::XAxis;
+use crate::tui::dashboard::{self, Dashboard, LayoutMode};
+use crate::watcher::signal::FsSignal;
+use crate::watcher::source::Source;
 
 pub fn run(args: WatchArgs, base_dir: &Path) -> Result<()> {
-    // Resolve which experiments to watch
-    let experiment_dirs = resolve_experiments(&args, base_dir)?;
-
-    if experiment_dirs.is_empty() {
-        anyhow::bail!("No experiments found to watch");
+    let experiments = resolve_experiments(&args, base_dir)?;
+    if experiments.is_empty() {
+        anyhow::bail!(
+            "No experiments found to watch in {} (run a training script first, or pass a name)",
+            base_dir.display()
+        );
     }
+    launch(experiments, LayoutMode::Dual, XAxis::Step, None, args.poll)
+}
 
-    let experiment_names: Vec<String> = experiment_dirs
-        .iter()
-        .map(|d| {
-            d.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string()
-        })
+/// Open the dashboard on a set of experiments.
+pub fn launch(
+    experiments: Vec<Experiment>,
+    layout: LayoutMode,
+    x_axis: XAxis,
+    metric: Option<String>,
+    poll_only: bool,
+) -> Result<()> {
+    let labels = display_labels(&experiments.iter().collect::<Vec<_>>());
+    let dirs: Vec<_> = experiments.iter().map(|e| e.dir.clone()).collect();
+    let sources: Vec<Source> = experiments
+        .into_iter()
+        .zip(labels)
+        .map(|(exp, label)| Source::new(exp, label))
         .collect();
 
-    // The tail reader behind each watcher is the single source of records
-    // (history included), so nothing is pre-loaded here.
-    let mut app = App::new(experiment_names.clone());
-
-    // Set up file watchers
-    let watchers: Vec<_> = experiment_dirs
-        .iter()
-        .map(|dir| {
-            let jsonl_path = dir.join("metrics.jsonl");
-            file_watcher::watch_metrics(&jsonl_path, args.poll)
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .context("Failed to set up file watchers")?;
-
-    // Set up terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = ratatui::backend::CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    // Main event loop
-    let result = run_event_loop(&mut terminal, &mut app, &watchers, &experiment_names);
-
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-
-    result
+    let signal = if poll_only {
+        FsSignal::disabled()
+    } else {
+        FsSignal::watch(&dirs)
+    };
+    let mut dashboard = Dashboard::new(sources, layout, x_axis, metric);
+    dashboard::run(&mut dashboard, &signal)
 }
 
-fn run_event_loop(
-    terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
-    app: &mut App,
-    watchers: &[std::sync::mpsc::Receiver<Vec<crate::data::metrics::MetricRecord>>],
-    experiment_names: &[String],
-) -> Result<()> {
-    loop {
-        // Check for new metrics from watchers
-        for (i, watcher) in watchers.iter().enumerate() {
-            while let Ok(records) = watcher.try_recv() {
-                if let Some(name) = experiment_names.get(i) {
-                    app.push_records(name, records);
-                }
-            }
-        }
-
-        // Draw
-        terminal.draw(|frame| {
-            let size = frame.area();
-
-            // Layout: two charts on top, info panel at bottom
-            let main_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-                .split(size);
-
-            let chart_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(main_layout[0]);
-
-            // Chart 1 (e.g., loss)
-            let chart1 = BrailleChart {
-                app,
-                metric: &app.chart_metrics.0.clone(),
-                focused: app.focus == Panel::Chart1,
-            };
-            frame.render_widget(chart1.render_to_paragraph(chart_layout[0]), chart_layout[0]);
-
-            // Chart 2 (e.g., psnr)
-            let chart2 = BrailleChart {
-                app,
-                metric: &app.chart_metrics.1.clone(),
-                focused: app.focus == Panel::Chart2,
-            };
-            frame.render_widget(chart2.render_to_paragraph(chart_layout[1]), chart_layout[1]);
-
-            // Info panel
-            let info = widgets::info_panel(app, app.focus == Panel::Info);
-            frame.render_widget(info, main_layout[1]);
-        })?;
-
-        // Handle input (with timeout for non-blocking)
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    app.handle_key(key.code);
-                }
-            }
-        }
-
-        if app.should_quit {
-            return Ok(());
-        }
-    }
-}
-
-fn resolve_experiments(args: &WatchArgs, base_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
-    let all = discover_experiments(base_dir);
+fn resolve_experiments(args: &WatchArgs, base_dir: &Path) -> Result<Vec<Experiment>> {
     if !args.experiments.is_empty() {
-        let found = resolve_many(&all, &args.experiments, args.project.as_deref())?;
-        return Ok(found.into_iter().map(|e| e.dir).collect());
+        let all = discover_experiments(base_dir);
+        return resolve_many(&all, &args.experiments, args.project.as_deref());
     }
 
     // Default: the most recent experiment(s), optionally within a project.
-    let mut experiments = match args.project {
-        Some(ref project) => filter_by_project(&all, project),
-        None => all,
-    };
+    let mut experiments = load_scope(base_dir, args.project.as_deref());
     experiments.truncate(args.latest.unwrap_or(1));
-    Ok(experiments.into_iter().map(|e| e.dir).collect())
+    Ok(experiments)
 }

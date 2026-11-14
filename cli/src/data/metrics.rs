@@ -16,8 +16,6 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use crate::data::goal::{default_goal, Goal};
-
 /// `name -> value` pairs in file order, with JSON `null` mapped to NaN.
 #[derive(Debug, Default)]
 pub struct Pairs<'a>(pub Vec<(Cow<'a, str>, f64)>);
@@ -207,69 +205,6 @@ pub fn find_rotated_segments(main_path: &Path) -> Vec<(u32, PathBuf)> {
     segments
 }
 
-/// Extract the best value for each metric across all records, using the
-/// name heuristic for direction.
-pub fn best_metrics(records: &[MetricRecord]) -> HashMap<String, f64> {
-    let mut best: HashMap<String, f64> = HashMap::new();
-    for record in records {
-        for (name, &value) in &record.metrics {
-            if !value.is_finite() {
-                continue;
-            }
-            match best.get(name) {
-                Some(&current) if !default_goal(name).better(value, current) => {}
-                _ => {
-                    best.insert(name.clone(), value);
-                }
-            }
-        }
-    }
-    best
-}
-
-/// Alignment mode for multi-experiment comparison.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlignMode {
-    /// Align by step number (default)
-    Step,
-    /// Align by wall-clock time relative to first record
-    WallTime,
-}
-
-/// Extract an aligned series for a given metric.
-///
-/// Returns (x_values, y_values) where x depends on the alignment mode.
-pub fn align_series(
-    records: &[MetricRecord],
-    metric: &str,
-    mode: AlignMode,
-) -> (Vec<f64>, Vec<f64>) {
-    let start_time = records.first().map(|r| r.timestamp).unwrap_or(0.0);
-
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-
-    for record in records {
-        if let Some(&value) = record.metrics.get(metric) {
-            if !value.is_finite() {
-                continue;
-            }
-            let x = match mode {
-                AlignMode::Step => record.step as f64,
-                AlignMode::WallTime => record.timestamp - start_time,
-            };
-            xs.push(x);
-            ys.push(value);
-        }
-    }
-
-    (xs, ys)
-}
-
-pub fn is_minimize_metric(name: &str) -> bool {
-    default_goal(name) == Goal::Min
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,33 +275,6 @@ mod tests {
     }
 
     #[test]
-    fn test_best_metrics_minimize_loss() {
-        let records = vec![
-            MetricRecord {
-                step: 0,
-                timestamp: 1.0,
-                metrics: HashMap::from([("loss".into(), 1.0), ("psnr".into(), 20.0)]),
-                gpu: None,
-            },
-            MetricRecord {
-                step: 1,
-                timestamp: 2.0,
-                metrics: HashMap::from([("loss".into(), 0.5), ("psnr".into(), 25.0)]),
-                gpu: None,
-            },
-            MetricRecord {
-                step: 2,
-                timestamp: 3.0,
-                metrics: HashMap::from([("loss".into(), 0.8), ("psnr".into(), 23.0)]),
-                gpu: None,
-            },
-        ];
-        let best = best_metrics(&records);
-        assert!((best["loss"] - 0.5).abs() < f64::EPSILON);
-        assert!((best["psnr"] - 25.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
     fn test_null_metric_is_nan_and_record_kept() {
         let f = write_jsonl(&[
             r#"{"step":0,"timestamp":1.0,"metrics":{"loss":null,"psnr":30.0},"gpu":{"gpu_util":null}}"#,
@@ -376,26 +284,6 @@ mod tests {
         assert!(records[0].metrics["loss"].is_nan());
         assert_eq!(records[0].metrics["psnr"], 30.0);
         assert!(records[0].gpu.as_ref().unwrap()["gpu_util"].is_nan());
-    }
-
-    #[test]
-    fn test_best_metrics_skips_nan() {
-        let records = vec![
-            MetricRecord {
-                step: 0,
-                timestamp: 1.0,
-                metrics: HashMap::from([("loss".into(), 0.5)]),
-                gpu: None,
-            },
-            MetricRecord {
-                step: 1,
-                timestamp: 2.0,
-                metrics: HashMap::from([("loss".into(), f64::NAN)]),
-                gpu: None,
-            },
-        ];
-        let best = best_metrics(&records);
-        assert!((best["loss"] - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]

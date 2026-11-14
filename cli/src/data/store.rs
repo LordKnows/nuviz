@@ -185,6 +185,25 @@ impl MetricStore {
             })
     }
 
+    /// Smallest and largest x coordinate over all records.
+    pub fn x_bounds(&self, x: XAxis) -> Option<(f64, f64)> {
+        if self.is_empty() {
+            return None;
+        }
+        Some(match x {
+            XAxis::Step => {
+                let min = self.steps.iter().copied().min().unwrap_or(0);
+                let max = self.steps.iter().copied().max().unwrap_or(0);
+                (min as f64, max as f64)
+            }
+            XAxis::WallTime => {
+                let t0 = self.timestamps[0];
+                let max = self.timestamps.iter().copied().fold(t0, f64::max);
+                (0.0, max - t0)
+            }
+        })
+    }
+
     /// Min / max / last of a metric over finite values.
     pub fn summary(&self, name: &str) -> Option<MetricSummary> {
         let column = self.column(name)?;
@@ -265,6 +284,16 @@ mod tests {
         let pts: Vec<(f64, f64)> = store.series("a", XAxis::WallTime).collect();
         assert_eq!(pts, vec![(0.0, 1.0), (60.0, 2.0)]);
         assert_eq!(store.steps_per_second(100), Some(5.0 / 60.0));
+    }
+
+    #[test]
+    fn test_x_bounds() {
+        let mut store = MetricStore::new();
+        assert_eq!(store.x_bounds(XAxis::Step), None);
+        store.push(10, 1000.0, [("a", 1.0)]);
+        store.push(50, 1030.0, [("a", 2.0)]);
+        assert_eq!(store.x_bounds(XAxis::Step), Some((10.0, 50.0)));
+        assert_eq!(store.x_bounds(XAxis::WallTime), Some((0.0, 30.0)));
     }
 
     #[test]

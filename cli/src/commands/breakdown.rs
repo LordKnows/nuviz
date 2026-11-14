@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::cli::BreakdownArgs;
 use crate::data::experiment::discover_experiments;
-use crate::data::metrics::is_minimize_metric;
+use crate::data::goal::Goals;
 use crate::data::resolve::resolve;
 use crate::data::scenes::{read_scenes, scenes_by_name, SceneRecord};
 use crate::output::latex_escape;
@@ -25,6 +25,7 @@ pub fn run(args: BreakdownArgs, base_dir: &Path) -> Result<()> {
     }
 
     let by_name = scenes_by_name(&records);
+    let goals = exp.goals();
 
     // Collect all metric names across scenes
     let metric_names: BTreeSet<String> = records
@@ -43,13 +44,14 @@ pub fn run(args: BreakdownArgs, base_dir: &Path) -> Result<()> {
             diff_exp_name,
             &by_name2,
             &metric_names,
+            &goals,
         );
     } else if args.latex {
-        print_latex(&exp.name, &by_name, &metric_names);
+        print_latex(&exp.name, &by_name, &metric_names, &goals);
     } else if args.markdown {
-        print_markdown(&exp.name, &by_name, &metric_names);
+        print_markdown(&exp.name, &by_name, &metric_names, &goals);
     } else {
-        print_table(&exp.name, &by_name, &metric_names);
+        print_table(&exp.name, &by_name, &metric_names, &goals);
     }
 
     Ok(())
@@ -59,6 +61,7 @@ fn print_table(
     exp_name: &str,
     by_name: &std::collections::HashMap<String, &SceneRecord>,
     metric_names: &BTreeSet<String>,
+    goals: &Goals,
 ) {
     println!("{exp_name}: Per-Scene Breakdown\n");
 
@@ -69,7 +72,7 @@ fn print_table(
 
     let mut header = vec!["Scene".to_string()];
     for name in metric_names {
-        let arrow = if is_minimize_metric(name) {
+        let arrow = if goals.get(name).is_min() {
             " ↓"
         } else {
             " ↑"
@@ -79,7 +82,7 @@ fn print_table(
     table.set_header(header);
 
     // Find best per metric for highlighting
-    let best = find_best_per_metric(by_name, metric_names);
+    let best = find_best_per_metric(by_name, metric_names, goals);
 
     let mut scene_names: Vec<&String> = by_name.keys().collect();
     scene_names.sort();
@@ -131,9 +134,10 @@ fn print_latex(
     exp_name: &str,
     by_name: &std::collections::HashMap<String, &SceneRecord>,
     metric_names: &BTreeSet<String>,
+    goals: &Goals,
 ) {
-    let best = find_best_per_metric(by_name, metric_names);
-    let second_best = find_second_best_per_metric(by_name, metric_names);
+    let best = find_best_per_metric(by_name, metric_names, goals);
+    let second_best = find_second_best_per_metric(by_name, metric_names, goals);
 
     let cols = "l".to_string() + &"c".repeat(metric_names.len());
     println!("\\begin{{table}}[t]");
@@ -148,7 +152,7 @@ fn print_latex(
 
     let mut header = vec!["Scene".to_string()];
     for name in metric_names {
-        let arrow = if is_minimize_metric(name) {
+        let arrow = if goals.get(name).is_min() {
             "$\\downarrow$"
         } else {
             "$\\uparrow$"
@@ -214,15 +218,16 @@ fn print_markdown(
     exp_name: &str,
     by_name: &std::collections::HashMap<String, &SceneRecord>,
     metric_names: &BTreeSet<String>,
+    goals: &Goals,
 ) {
-    let best = find_best_per_metric(by_name, metric_names);
+    let best = find_best_per_metric(by_name, metric_names, goals);
 
     println!("### {exp_name}: Per-Scene Breakdown\n");
 
     let mut header = vec!["Scene".to_string()];
     let mut separator = vec!["---".to_string()];
     for name in metric_names {
-        let arrow = if is_minimize_metric(name) {
+        let arrow = if goals.get(name).is_min() {
             " ↓"
         } else {
             " ↑"
@@ -283,6 +288,7 @@ fn print_diff(
     name2: &str,
     by_name2: &std::collections::HashMap<String, &SceneRecord>,
     metric_names: &BTreeSet<String>,
+    goals: &Goals,
 ) {
     println!("Diff: {name1} vs {name2}\n");
 
@@ -293,7 +299,7 @@ fn print_diff(
 
     let mut header = vec!["Scene".to_string()];
     for name in metric_names {
-        let arrow = if is_minimize_metric(name) {
+        let arrow = if goals.get(name).is_min() {
             " ↓"
         } else {
             " ↑"
@@ -328,7 +334,7 @@ fn print_diff(
                 (Some(a), Some(b)) => {
                     let delta = a - b;
                     let formatted = format!("{delta:+.4}");
-                    let minimize = is_minimize_metric(name);
+                    let minimize = goals.get(name).is_min();
                     let color = if (minimize && delta < 0.0) || (!minimize && delta > 0.0) {
                         Color::Green
                     } else if delta.abs() < f64::EPSILON {
@@ -351,10 +357,11 @@ fn print_diff(
 fn find_best_per_metric(
     by_name: &std::collections::HashMap<String, &SceneRecord>,
     metric_names: &BTreeSet<String>,
+    goals: &Goals,
 ) -> std::collections::HashMap<String, f64> {
     let mut best = std::collections::HashMap::new();
     for name in metric_names {
-        let minimize = is_minimize_metric(name);
+        let minimize = goals.get(name).is_min();
         let mut best_val: Option<f64> = None;
         for record in by_name.values() {
             if let Some(&v) = record.metrics.get(name) {
@@ -386,12 +393,13 @@ fn find_best_per_metric(
 fn find_second_best_per_metric(
     by_name: &std::collections::HashMap<String, &SceneRecord>,
     metric_names: &BTreeSet<String>,
+    goals: &Goals,
 ) -> std::collections::HashMap<String, f64> {
     let mut second = std::collections::HashMap::new();
-    let best = find_best_per_metric(by_name, metric_names);
+    let best = find_best_per_metric(by_name, metric_names, goals);
 
     for name in metric_names {
-        let minimize = is_minimize_metric(name);
+        let minimize = goals.get(name).is_min();
         let best_val = best.get(name).copied();
         let mut second_val: Option<f64> = None;
 

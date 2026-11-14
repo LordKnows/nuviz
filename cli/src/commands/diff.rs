@@ -15,7 +15,7 @@ pub fn run(args: DiffArgs, base_dir: &Path) -> Result<()> {
     let exp_a = resolve(&experiments, &args.experiment_a, args.project.as_deref())?;
     let exp_b = resolve(&experiments, &args.experiment_b, args.project.as_deref())?;
 
-    let caps = detect_capabilities();
+    let caps = detect_capabilities(args.protocol);
     let tag = &args.tag;
 
     // Find matching image pairs
@@ -62,15 +62,13 @@ pub fn run(args: DiffArgs, base_dir: &Path) -> Result<()> {
         args.experiment_a, args.experiment_b
     );
 
-    let (max_w, max_h) = render::get_terminal_pixel_size();
-
     if args.heatmap {
         // Generate and display error heatmap
         let img_a = image::open(&img_entry_a.path)?;
         let img_b = image::open(&img_entry_b.path)?;
         let result = generate_error_heatmap(&img_a, &img_b);
 
-        render::render_dynamic_image(&result.image, &caps, max_w, max_h.saturating_sub(128))?;
+        render::show(&result.image, &caps, 8)?;
 
         println!();
         println!("Error Analysis:");
@@ -83,13 +81,7 @@ pub fn run(args: DiffArgs, base_dir: &Path) -> Result<()> {
         }
     } else {
         // Side-by-side comparison
-        render::render_image_pair(
-            &img_entry_a.path,
-            &img_entry_b.path,
-            &caps,
-            max_w,
-            max_h.saturating_sub(128),
-        )?;
+        render::show_pair(&img_entry_a.path, &img_entry_b.path, &caps, 6)?;
 
         // Also compute and display metrics
         let img_a = image::open(&img_entry_a.path)?;

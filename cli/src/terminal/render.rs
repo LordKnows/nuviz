@@ -4,83 +4,87 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use base64::Engine;
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, Rgba};
+use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
 
-use super::capability::{ColorDepth, TerminalCapabilities};
+use super::capability::{ColorDepth, ImageProtocol, TerminalCapabilities};
 
-/// Render an image to the terminal using the best available protocol.
-pub fn render_image(
-    path: &Path,
-    caps: &TerminalCapabilities,
-    max_width: u32,
-    max_height: u32,
-) -> Result<()> {
+/// Open an image file and render it, leaving `reserve_rows` terminal rows
+/// free for surrounding text.
+pub fn show_file(path: &Path, caps: &TerminalCapabilities, reserve_rows: u16) -> Result<()> {
     let img =
         image::open(path).with_context(|| format!("Failed to open image: {}", path.display()))?;
-    render_dynamic_image(&img, caps, max_width, max_height)
+    show(&img, caps, reserve_rows)
 }
 
-/// Render a DynamicImage (already loaded) to the terminal.
-pub fn render_dynamic_image(
-    img: &DynamicImage,
-    caps: &TerminalCapabilities,
-    max_width: u32,
-    max_height: u32,
-) -> Result<()> {
-    let img = resize_to_fit(img, max_width, max_height);
-
-    if caps.supports_kitty_graphics {
-        render_kitty(&img)?;
-    } else if caps.supports_iterm2 {
-        render_iterm2(&img)?;
-    } else if caps.supports_sixel {
-        render_sixel(&img)?;
-    } else {
-        render_halfblock(&img, caps)?;
+/// Render an image to stdout using the terminal's protocol, scaled down to
+/// fit the window.
+pub fn show(img: &DynamicImage, caps: &TerminalCapabilities, reserve_rows: u16) -> Result<()> {
+    let (max_w, max_h) = pixel_budget(caps, reserve_rows);
+    let img = resize_to_fit(img, max_w, max_h);
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    match caps.protocol {
+        ImageProtocol::Kitty => write_kitty(&img, &mut out)?,
+        ImageProtocol::Iterm2 => write_iterm2(&img, &mut out)?,
+        ImageProtocol::Sixel => write_sixel(&img, &mut out)?,
+        ImageProtocol::Halfblock => write_halfblock(&img, caps.color_depth, &mut out)?,
     }
-
+    out.flush()?;
     Ok(())
 }
 
-/// Render two images side by side.
-pub fn render_image_pair(
+/// Render two image files side by side.
+pub fn show_pair(
     left: &Path,
     right: &Path,
     caps: &TerminalCapabilities,
-    max_width: u32,
-    max_height: u32,
+    reserve_rows: u16,
 ) -> Result<()> {
     let left_img =
         image::open(left).with_context(|| format!("Failed to open: {}", left.display()))?;
     let right_img =
         image::open(right).with_context(|| format!("Failed to open: {}", right.display()))?;
 
-    // Each image gets half the width, minus 2 cols for separator
-    let half_width = max_width.saturating_sub(2) / 2;
-    let left_resized = resize_to_fit(&left_img, half_width, max_height);
-    let right_resized = resize_to_fit(&right_img, half_width, max_height);
+    // Scale each image to half the window so the pair fits; the gap is one
+    // character cell wide.
+    let (max_w, max_h) = pixel_budget(caps, reserve_rows);
+    let gap = match caps.protocol {
+        ImageProtocol::Halfblock => 2,
+        _ => u32::from(caps.cell_px.0),
+    };
+    let half = max_w.saturating_sub(gap) / 2;
+    let combined = combine_side_by_side(
+        &resize_to_fit(&left_img, half.max(1), max_h),
+        &resize_to_fit(&right_img, half.max(1), max_h),
+        gap,
+    );
+    show(&combined, caps, reserve_rows)
+}
 
-    // For graphics protocols, render sequentially with a gap
-    if caps.supports_kitty_graphics || caps.supports_iterm2 || caps.supports_sixel {
-        // Combine into a single image with separator
-        let combined = combine_side_by_side(&left_resized, &right_resized, 4);
-        render_dynamic_image(&combined, caps, max_width, max_height)?;
-    } else {
-        // Half-block: render combined image
-        let combined = combine_side_by_side(&left_resized, &right_resized, 4);
-        render_halfblock(&combined, caps)?;
+/// How many image pixels fit in the window for the active protocol.
+///
+/// Graphics protocols draw real pixels. Half blocks draw one image pixel
+/// per column and two per row, so the budget is in character cells.
+pub fn pixel_budget(caps: &TerminalCapabilities, reserve_rows: u16) -> (u32, u32) {
+    let cols = u32::from(caps.cols.max(1));
+    let rows = u32::from(caps.rows.saturating_sub(reserve_rows).max(1));
+    match caps.protocol {
+        ImageProtocol::Halfblock => (cols, rows * 2),
+        _ => (
+            cols * u32::from(caps.cell_px.0),
+            rows * u32::from(caps.cell_px.1),
+        ),
     }
-
-    Ok(())
 }
 
 /// Resize image to fit within max dimensions while preserving aspect ratio.
+/// Images that already fit are returned unchanged (never upscaled).
 fn resize_to_fit(img: &DynamicImage, max_width: u32, max_height: u32) -> DynamicImage {
     let (w, h) = img.dimensions();
     if w <= max_width && h <= max_height {
         return img.clone();
     }
-    img.resize(max_width, max_height, FilterType::Lanczos3)
+    img.resize(max_width.max(1), max_height.max(1), FilterType::Lanczos3)
 }
 
 /// Combine two images side by side with a separator gap.
@@ -97,206 +101,188 @@ fn combine_side_by_side(left: &DynamicImage, right: &DynamicImage, gap: u32) -> 
 }
 
 /// Kitty Graphics Protocol: transmit PNG as base64 chunks.
-fn render_kitty(img: &DynamicImage) -> Result<()> {
-    let png_data = encode_png(img)?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&png_data);
-
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
+fn write_kitty(img: &DynamicImage, out: &mut impl Write) -> Result<()> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(encode_png(img)?);
 
     // Chunked transmission (4096 bytes per chunk)
-    let chunk_size = 4096;
-    let chunks: Vec<&str> = encoded
-        .as_bytes()
-        .chunks(chunk_size)
-        .map(|c| std::str::from_utf8(c).unwrap_or(""))
-        .collect();
-
+    let chunks: Vec<&[u8]> = encoded.as_bytes().chunks(4096).collect();
     for (i, chunk) in chunks.iter().enumerate() {
-        let more = if i < chunks.len() - 1 { 1 } else { 0 };
+        let more = u8::from(i + 1 < chunks.len());
         if i == 0 {
             // First chunk: include action and format
-            write!(out, "\x1b_Ga=T,f=100,m={more};{chunk}\x1b\\")?;
+            write!(out, "\x1b_Ga=T,f=100,m={more};")?;
         } else {
-            write!(out, "\x1b_Gm={more};{chunk}\x1b\\")?;
+            write!(out, "\x1b_Gm={more};")?;
         }
+        out.write_all(chunk)?;
+        write!(out, "\x1b\\")?;
     }
     writeln!(out)?;
-    out.flush()?;
     Ok(())
 }
 
 /// iTerm2 Inline Image Protocol.
-fn render_iterm2(img: &DynamicImage) -> Result<()> {
-    let png_data = encode_png(img)?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&png_data);
+fn write_iterm2(img: &DynamicImage, out: &mut impl Write) -> Result<()> {
+    let png = encode_png(img)?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
     let (w, h) = img.dimensions();
-
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-
     write!(
         out,
-        "\x1b]1337;File=inline=1;width={w}px;height={h}px;preserveAspectRatio=1:{encoded}\x07"
+        "\x1b]1337;File=inline=1;size={};width={w}px;height={h}px;preserveAspectRatio=1:{encoded}\x07",
+        png.len()
     )?;
     writeln!(out)?;
-    out.flush()?;
     Ok(())
 }
 
-/// Sixel rendering: quantize to 256 colors and emit DCS sequences.
-fn render_sixel(img: &DynamicImage) -> Result<()> {
-    let rgba = img.to_rgba8();
+/// Sixel rendering with a fixed 6x6x6 color cube.
+fn write_sixel(img: &DynamicImage, out: &mut impl Write) -> Result<()> {
+    let rgba = flatten_alpha(img);
     let (width, height) = rgba.dimensions();
+    let (width, height) = (width as usize, height as usize);
 
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
+    // Quantize once; each band then only visits the colors it contains.
+    let indices: Vec<u8> = rgba.pixels().map(nearest_color).collect();
 
-    // Build a simple 256-color palette by uniform quantization
-    // DCS q  ... ST
-    write!(out, "\x1bPq")?;
-
-    // Register 216 colors (6x6x6 cube) + leave room
-    for r in 0..6u8 {
-        for g in 0..6u8 {
-            for b in 0..6u8 {
-                let idx = r as u32 * 36 + g as u32 * 6 + b as u32;
-                let ri = (r as u32 * 100) / 5;
-                let gi = (g as u32 * 100) / 5;
-                let bi = (b as u32 * 100) / 5;
-                write!(out, "#{idx};2;{ri};{gi};{bi}")?;
+    write!(out, "\x1bPq\"1;1;{width};{height}")?;
+    for r in 0..6u32 {
+        for g in 0..6u32 {
+            for b in 0..6u32 {
+                let idx = r * 36 + g * 6 + b;
+                write!(out, "#{idx};2;{};{};{}", r * 20, g * 20, b * 20)?;
             }
         }
     }
 
-    // Render in 6-pixel-high bands
-    let mut y = 0u32;
-    while y < height {
-        for color_idx in 0..216u32 {
-            let mut has_pixels = false;
-            let mut sixel_data = Vec::with_capacity(width as usize);
+    let mut row = vec![0u8; width];
+    for band_top in (0..height).step_by(6) {
+        let band_rows = (height - band_top).min(6);
+        let band = &indices[band_top * width..(band_top + band_rows) * width];
 
-            for x in 0..width {
-                let mut sixel_bits: u8 = 0;
-                for dy in 0..6u32 {
-                    let py = y + dy;
-                    if py < height {
-                        let pixel = rgba.get_pixel(x, py);
-                        if pixel[3] > 127 && nearest_color(pixel) == color_idx {
-                            sixel_bits |= 1 << dy;
-                            has_pixels = true;
-                        }
+        let mut present = [false; 216];
+        for &c in band {
+            present[c as usize] = true;
+        }
+
+        for color in (0..216u8).filter(|c| present[*c as usize]) {
+            row.fill(0);
+            for (dy, line) in band.chunks(width).enumerate() {
+                for (x, &c) in line.iter().enumerate() {
+                    if c == color {
+                        row[x] |= 1 << dy;
                     }
                 }
-                sixel_data.push(sixel_bits + 0x3f);
             }
-
-            if has_pixels {
-                write!(out, "#{color_idx}")?;
-                for &b in &sixel_data {
-                    out.write_all(&[b])?;
-                }
-                write!(out, "$")?; // CR within sixel band
-            }
+            write!(out, "#{color}")?;
+            write_sixel_row(&row, out)?;
+            write!(out, "$")?; // carriage return within the band
         }
-        write!(out, "-")?; // Next sixel band (line feed)
-        y += 6;
+        write!(out, "-")?; // next band
     }
 
-    write!(out, "\x1b\\")?; // ST
+    write!(out, "\x1b\\")?;
     writeln!(out)?;
-    out.flush()?;
     Ok(())
 }
 
-/// Map RGBA pixel to nearest 6x6x6 cube index.
-fn nearest_color(pixel: &Rgba<u8>) -> u32 {
-    let r = ((pixel[0] as u32 + 25) / 51).min(5);
-    let g = ((pixel[1] as u32 + 25) / 51).min(5);
-    let b = ((pixel[2] as u32 + 25) / 51).min(5);
-    r * 36 + g * 6 + b
+/// Emit one sixel row with run-length encoding (`!<count><char>`).
+fn write_sixel_row(row: &[u8], out: &mut impl Write) -> io::Result<()> {
+    let mut i = 0;
+    while i < row.len() {
+        let bits = row[i];
+        let run = row[i..].iter().take_while(|&&b| b == bits).count();
+        let ch = (bits + 0x3f) as char;
+        if run >= 4 {
+            write!(out, "!{run}{ch}")?;
+        } else {
+            for _ in 0..run {
+                write!(out, "{ch}")?;
+            }
+        }
+        i += run;
+    }
+    Ok(())
 }
 
-/// Half-block fallback: use upper/lower half-block chars with 24-bit ANSI colors.
-/// Each character cell encodes 2 vertical pixels.
-fn render_halfblock(img: &DynamicImage, caps: &TerminalCapabilities) -> Result<()> {
-    let rgba = img.to_rgba8();
+/// Map an (opaque) pixel to the nearest 6x6x6 cube index.
+fn nearest_color(pixel: &Rgba<u8>) -> u8 {
+    let level = |v: u8| ((u32::from(v) + 25) / 51).min(5);
+    (level(pixel[0]) * 36 + level(pixel[1]) * 6 + level(pixel[2])) as u8
+}
+
+/// Blend transparency onto black so every protocol sees opaque pixels.
+fn flatten_alpha(img: &DynamicImage) -> RgbaImage {
+    let mut rgba = img.to_rgba8();
+    for p in rgba.pixels_mut() {
+        let a = u32::from(p[3]);
+        if a < 255 {
+            for c in 0..3 {
+                p[c] = (u32::from(p[c]) * a / 255) as u8;
+            }
+            p[3] = 255;
+        }
+    }
+    rgba
+}
+
+/// Half-block fallback: each character cell shows two vertically stacked
+/// pixels (upper half block: foreground = top pixel, background = bottom).
+fn write_halfblock(img: &DynamicImage, depth: ColorDepth, out: &mut impl Write) -> Result<()> {
+    let rgba = flatten_alpha(img);
     let (width, height) = rgba.dimensions();
 
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-
-    let mut y = 0u32;
-    while y < height {
+    for y in (0..height).step_by(2) {
         for x in 0..width {
-            let top = rgba.get_pixel(x, y);
+            let top = *rgba.get_pixel(x, y);
             let bottom = if y + 1 < height {
                 *rgba.get_pixel(x, y + 1)
             } else {
-                Rgba([0, 0, 0, 0])
+                Rgba([0, 0, 0, 255])
             };
 
-            match caps.color_depth {
-                ColorDepth::TrueColor => {
-                    // Upper half block: foreground = top, background = bottom
-                    write!(
-                        out,
-                        "\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m\u{2580}",
-                        top[0], top[1], top[2], bottom[0], bottom[1], bottom[2]
-                    )?;
-                }
-                ColorDepth::Colors256 => {
-                    let fg = to_256_color(top[0], top[1], top[2]);
-                    let bg = to_256_color(bottom[0], bottom[1], bottom[2]);
-                    write!(out, "\x1b[38;5;{fg}m\x1b[48;5;{bg}m\u{2580}")?;
-                }
-                ColorDepth::Colors16 => {
-                    // Basic fallback — just use half blocks with default colors
-                    write!(out, "\u{2580}")?;
+            match depth {
+                ColorDepth::TrueColor => write!(
+                    out,
+                    "\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m\u{2580}",
+                    top[0], top[1], top[2], bottom[0], bottom[1], bottom[2]
+                )?,
+                ColorDepth::Colors256 => write!(
+                    out,
+                    "\x1b[38;5;{}m\x1b[48;5;{}m\u{2580}",
+                    to_256_color(top[0], top[1], top[2]),
+                    to_256_color(bottom[0], bottom[1], bottom[2])
+                )?,
+                ColorDepth::Mono => {
+                    // No color: shade by the average brightness of the cell.
+                    let luma = |p: Rgba<u8>| {
+                        (u32::from(p[0]) * 299 + u32::from(p[1]) * 587 + u32::from(p[2]) * 114)
+                            / 1000
+                    };
+                    let shade = [' ', '░', '▒', '▓', '█'];
+                    let level = (luma(top) + luma(bottom)) / 2 * 5 / 256;
+                    write!(out, "{}", shade[level as usize])?;
                 }
             }
         }
-        write!(out, "\x1b[0m")?; // Reset
+        if depth != ColorDepth::Mono {
+            write!(out, "\x1b[0m")?;
+        }
         writeln!(out)?;
-        y += 2;
     }
-
-    out.flush()?;
     Ok(())
 }
 
 /// Map RGB to 256-color xterm palette (16-231 color cube).
 fn to_256_color(r: u8, g: u8, b: u8) -> u8 {
-    let ri = ((r as u16 + 25) / 51).min(5) as u8;
-    let gi = ((g as u16 + 25) / 51).min(5) as u8;
-    let bi = ((b as u16 + 25) / 51).min(5) as u8;
-    16 + 36 * ri + 6 * gi + bi
+    let level = |v: u8| ((u16::from(v) + 25) / 51).min(5) as u8;
+    16 + 36 * level(r) + 6 * level(g) + level(b)
 }
 
 /// Encode a DynamicImage as PNG bytes.
 fn encode_png(img: &DynamicImage) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    let mut cursor = io::Cursor::new(&mut buf);
-    img.write_to(&mut cursor, image::ImageFormat::Png)?;
+    img.write_to(&mut io::Cursor::new(&mut buf), image::ImageFormat::Png)?;
     Ok(buf)
-}
-
-/// Get terminal dimensions in pixels (if available) or estimate from character cells.
-pub fn get_terminal_pixel_size() -> (u32, u32) {
-    // Try ioctl TIOCGWINSZ for pixel size
-    if let Ok((cols, rows)) = crossterm::terminal::size() {
-        // Estimate: typical terminal character is ~8px wide, ~16px tall
-        let pixel_width = cols as u32 * 8;
-        let pixel_height = rows as u32 * 16;
-        return (pixel_width, pixel_height);
-    }
-    (640, 480) // fallback
-}
-
-/// Get terminal size in character cells.
-#[allow(dead_code)]
-pub fn get_terminal_char_size() -> (u16, u16) {
-    crossterm::terminal::size().unwrap_or((80, 24))
 }
 
 #[cfg(test)]
@@ -347,5 +333,131 @@ mod tests {
         assert!(!data.is_empty());
         // PNG magic bytes
         assert_eq!(&data[..4], &[0x89, 0x50, 0x4E, 0x47]);
+    }
+
+    fn caps(protocol: ImageProtocol, cols: u16, rows: u16) -> TerminalCapabilities {
+        TerminalCapabilities {
+            protocol,
+            color_depth: ColorDepth::TrueColor,
+            cols,
+            rows,
+            cell_px: (10, 20),
+        }
+    }
+
+    #[test]
+    fn test_pixel_budget_depends_on_protocol() {
+        // Half blocks: one pixel per column, two per row.
+        assert_eq!(
+            pixel_budget(&caps(ImageProtocol::Halfblock, 80, 24), 4),
+            (80, 40)
+        );
+        // Graphics protocols: real pixels from the cell size.
+        assert_eq!(
+            pixel_budget(&caps(ImageProtocol::Kitty, 80, 24), 4),
+            (800, 400)
+        );
+        assert_eq!(
+            pixel_budget(&caps(ImageProtocol::Sixel, 80, 3), 10),
+            (800, 20)
+        );
+    }
+
+    #[test]
+    fn test_halfblock_output_never_exceeds_terminal_width() {
+        // A wide image must be scaled to the column count, not wrapped.
+        let img = DynamicImage::new_rgba8(640, 480);
+        let c = caps(ImageProtocol::Halfblock, 80, 24);
+        let (max_w, max_h) = pixel_budget(&c, 2);
+        let fitted = resize_to_fit(&img, max_w, max_h);
+        let mut out = Vec::new();
+        write_halfblock(&fitted, ColorDepth::Mono, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines.iter().all(|l| l.chars().count() <= 80),
+            "{}",
+            lines[0].chars().count()
+        );
+        assert!(lines.len() <= 22);
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn test_halfblock_color_modes() {
+        let mut img = RgbaImage::new(2, 2);
+        img.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+        img.put_pixel(0, 1, Rgba([0, 0, 255, 255]));
+        let img = DynamicImage::ImageRgba8(img);
+
+        let mut out = Vec::new();
+        write_halfblock(&img, ColorDepth::TrueColor, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.starts_with("\x1b[38;2;255;0;0m\x1b[48;2;0;0;255m\u{2580}"),
+            "{text:?}"
+        );
+        assert!(text.ends_with("\x1b[0m\n"));
+
+        let mut out = Vec::new();
+        write_halfblock(&img, ColorDepth::Colors256, &mut out).unwrap();
+        assert!(String::from_utf8(out)
+            .unwrap()
+            .starts_with("\x1b[38;5;196m\x1b[48;5;21m"));
+
+        let mut out = Vec::new();
+        write_halfblock(
+            &DynamicImage::ImageRgba8(RgbaImage::from_pixel(3, 2, Rgba([255, 255, 255, 255]))),
+            ColorDepth::Mono,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "███\n");
+    }
+
+    #[test]
+    fn test_transparent_pixels_blend_to_black() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(1, 1, Rgba([200, 100, 50, 0])));
+        assert_eq!(flatten_alpha(&img).get_pixel(0, 0), &Rgba([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn test_sixel_structure_and_run_length_encoding() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(10, 7, Rgba([255, 0, 0, 255])));
+        let mut out = Vec::new();
+        write_sixel(&img, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("\x1bPq\"1;1;10;7"), "{text:?}");
+        assert!(text.trim_end().ends_with("\x1b\\"));
+        // Pure red is cube index 180. First band: all six rows set (`~`),
+        // second band: only the top row (`@`), both run-length encoded.
+        assert!(text.contains("#180!10~$-"), "{text:?}");
+        assert!(text.contains("#180!10@$-"), "{text:?}");
+
+        let mut row_out = Vec::new();
+        write_sixel_row(&[1, 1, 3, 3, 3, 3, 3], &mut row_out).unwrap();
+        assert_eq!(String::from_utf8(row_out).unwrap(), "@@!5B");
+    }
+
+    #[test]
+    fn test_kitty_chunks_and_iterm2_header() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_fn(64, 64, |x, y| {
+            Rgba([(x * 4) as u8, (y * 4) as u8, ((x * y) % 255) as u8, 255])
+        }));
+        let mut out = Vec::new();
+        write_kitty(&img, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("\x1b_Ga=T,f=100,m="));
+        let last = text.trim_end().rsplit("\x1b_G").next().unwrap();
+        assert!(
+            last.starts_with("m=0;") || last.starts_with("a=T,f=100,m=0;"),
+            "{last:?}"
+        );
+
+        let mut out = Vec::new();
+        write_iterm2(&img, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("\x1b]1337;File=inline=1;size="));
+        assert!(text.contains(";width=64px;height=64px;"));
     }
 }

@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::data::summary::ValueMode;
+use crate::terminal::capability::ImageProtocol;
 
 #[derive(Parser)]
 #[command(name = "nuviz")]
@@ -284,6 +285,10 @@ pub struct ImageArgs {
     #[arg(long)]
     pub side_by_side: Option<String>,
 
+    /// Image protocol [default: ask the terminal; $NUVIZ_IMAGE_PROTOCOL overrides]
+    #[arg(long, value_enum)]
+    pub protocol: Option<ImageProtocol>,
+
     /// Filter by project name
     #[arg(long)]
     pub project: Option<String>,
@@ -308,6 +313,10 @@ pub struct DiffArgs {
     /// Show per-pixel error heatmap
     #[arg(long)]
     pub heatmap: bool,
+
+    /// Image protocol [default: ask the terminal; $NUVIZ_IMAGE_PROTOCOL overrides]
+    #[arg(long, value_enum)]
+    pub protocol: Option<ImageProtocol>,
 
     /// Filter by project name
     #[arg(long)]
