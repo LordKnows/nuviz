@@ -135,16 +135,20 @@ fn extract_param(exp: &Experiment, param: &str) -> Option<String> {
     let name = &exp.dir_name;
     let param_short = param.split('.').next_back().unwrap_or(param);
 
-    // Look for patterns like "lr_1e-4" or "lr1e-4" or "lr-1e-4"
+    // Look for patterns like "lr_1e-4", "lr1e-4" or "lr-1e-4". The value
+    // ends at `_`, or at a `-` that starts the next word ("lr_0.001-sh_2"),
+    // but not at the `-` inside a number such as "1e-4".
     if let Some(pos) = name.find(param_short) {
         let after = &name[pos + param_short.len()..];
-        // Skip separator characters
-        let value_start = after.trim_start_matches(['_', '-', '=']);
-        // Take until next separator
-        let value: String = value_start
-            .chars()
-            .take_while(|c| !matches!(c, '_' | ' '))
-            .collect();
+        let rest: Vec<char> = after.trim_start_matches(['_', '-', '=']).chars().collect();
+        let end = (0..rest.len())
+            .find(|&i| {
+                rest[i] == '_'
+                    || rest[i] == ' '
+                    || (rest[i] == '-' && rest.get(i + 1).is_some_and(|c| c.is_alphabetic()))
+            })
+            .unwrap_or(rest.len());
+        let value: String = rest[..end].iter().collect();
         if !value.is_empty() {
             return Some(value);
         }
@@ -492,6 +496,30 @@ mod tests {
             natural_sorted(values),
             ["1e-4", "0.001", "8", "64", "128", "adam", "true"]
         );
+    }
+
+    #[test]
+    fn test_param_from_name_when_no_config_was_logged() {
+        use crate::data::meta::ExperimentMeta;
+        use crate::data::status::Status;
+        let exp = |name: &str| Experiment {
+            name: name.into(),
+            dir_name: name.into(),
+            project: None,
+            dir: name.into(),
+            status: Status::Done,
+            meta: ExperimentMeta::default(),
+            started: None,
+            heartbeat_step: None,
+        };
+        let e = exp("demo-lr_0.001-sh_2_seed0");
+        assert_eq!(extract_param(&e, "lr").as_deref(), Some("0.001"));
+        assert_eq!(extract_param(&e, "sh").as_deref(), Some("2"));
+        assert_eq!(
+            extract_param(&exp("lr_1e-4_d8"), "lr").as_deref(),
+            Some("1e-4")
+        );
+        assert_eq!(extract_param(&exp("baseline"), "lr"), None);
     }
 
     #[test]
