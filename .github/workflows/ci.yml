@@ -80,6 +80,22 @@ jobs:
         working-directory: cli
         run: cargo test --lib
 
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep in sync with `rust-version` in cli/Cargo.toml.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88.0"
+
+      - name: Check
+        working-directory: cli
+        run: cargo check --locked --all-targets
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
