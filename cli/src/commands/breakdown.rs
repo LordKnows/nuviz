@@ -1,19 +1,18 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color, Table};
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::cli::BreakdownArgs;
-use crate::data::experiment::{discover_experiments, filter_by_project, Experiment};
+use crate::data::experiment::discover_experiments;
 use crate::data::metrics::is_minimize_metric;
+use crate::data::resolve::resolve;
 use crate::data::scenes::{read_scenes, scenes_by_name, SceneRecord};
 use crate::output::latex_escape;
 
 pub fn run(args: BreakdownArgs, base_dir: &Path) -> Result<()> {
     let experiments = discover_experiments(base_dir);
-
-    let exp = find_experiment(&experiments, &args.experiment, args.project.as_deref())
-        .context(format!("Experiment '{}' not found", args.experiment))?;
+    let exp = resolve(&experiments, &args.experiment, args.project.as_deref())?;
 
     let scenes_path = exp.dir.join("scenes.jsonl");
     let records = read_scenes(&scenes_path);
@@ -34,8 +33,7 @@ pub fn run(args: BreakdownArgs, base_dir: &Path) -> Result<()> {
         .collect();
 
     if let Some(ref diff_exp_name) = args.diff {
-        let exp2 = find_experiment(&experiments, diff_exp_name, args.project.as_deref())
-            .context(format!("Experiment '{diff_exp_name}' not found"))?;
+        let exp2 = resolve(&experiments, diff_exp_name, args.project.as_deref())?;
         let records2 = read_scenes(&exp2.dir.join("scenes.jsonl"));
         let by_name2 = scenes_by_name(&records2);
         print_diff(
@@ -433,21 +431,4 @@ fn capitalize(s: &str) -> String {
         None => String::new(),
         Some(c) => c.to_uppercase().to_string() + chars.as_str(),
     }
-}
-
-fn find_experiment<'a>(
-    experiments: &'a [Experiment],
-    name: &str,
-    project: Option<&str>,
-) -> Option<&'a Experiment> {
-    if let Some(p) = project {
-        let filtered = filter_by_project(experiments, p);
-        if let Some(exp) = filtered.iter().find(|e| e.name == name) {
-            // Find the matching experiment in the original slice to return a reference with 'a lifetime
-            return experiments
-                .iter()
-                .find(|e| e.name == exp.name && e.dir == exp.dir);
-        }
-    }
-    experiments.iter().find(|e| e.name == name)
 }

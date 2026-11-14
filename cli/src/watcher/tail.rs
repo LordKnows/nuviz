@@ -1,8 +1,7 @@
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use crate::data::metrics::{find_rotated_segments, MetricRecord};
+use crate::data::metrics::{find_rotated_segments, for_each_line, parse_line, MetricRecord};
 
 /// Incrementally reads new lines from a JSONL file.
 ///
@@ -53,8 +52,8 @@ impl TailReader {
     pub fn read_new(&mut self) -> Vec<MetricRecord> {
         let mut records = Vec::new();
         self.read_lines(|line| {
-            if let Ok(record) = serde_json::from_str::<MetricRecord>(line) {
-                records.push(record);
+            if let Some(raw) = parse_line(line) {
+                records.push(raw.into());
             }
         });
         records
@@ -94,7 +93,7 @@ impl TailReader {
         if meta.len() == self.position {
             return;
         }
-        self.position += read_file_from(&mut file, self.position, false, &mut on_line);
+        self.position += for_each_line(&mut file, self.position, false, &mut on_line);
     }
 
     fn drain_rotated(&self, on_line: &mut impl FnMut(&str)) {
@@ -129,47 +128,9 @@ fn file_id(_meta: &std::fs::Metadata) -> Option<u64> {
 
 fn read_from(path: &Path, from: u64, whole_file: bool, on_line: &mut impl FnMut(&str)) -> u64 {
     match File::open(path) {
-        Ok(mut f) => read_file_from(&mut f, from, whole_file, on_line),
+        Ok(mut f) => for_each_line(&mut f, from, whole_file, on_line),
         Err(_) => 0,
     }
-}
-
-/// Read lines starting at byte offset `from`. Returns the number of bytes
-/// consumed. Unless `whole_file` is set, a trailing line without a newline is
-/// left unconsumed.
-fn read_file_from(
-    file: &mut File,
-    from: u64,
-    whole_file: bool,
-    on_line: &mut impl FnMut(&str),
-) -> u64 {
-    if file.seek(SeekFrom::Start(from)).is_err() {
-        return 0;
-    }
-    let mut buf = Vec::new();
-    if file.read_to_end(&mut buf).is_err() {
-        return 0;
-    }
-
-    let consumed = if whole_file {
-        buf.len()
-    } else {
-        match buf.iter().rposition(|&b| b == b'\n') {
-            Some(last_newline) => last_newline + 1,
-            None => return 0,
-        }
-    };
-
-    for raw in buf[..consumed].split(|&b| b == b'\n') {
-        if let Ok(line) = std::str::from_utf8(raw) {
-            let line = line.trim();
-            if !line.is_empty() {
-                on_line(line);
-            }
-        }
-    }
-
-    consumed as u64
 }
 
 #[cfg(test)]

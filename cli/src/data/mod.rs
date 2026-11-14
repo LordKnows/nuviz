@@ -1,7 +1,12 @@
 pub mod aggregation;
 pub mod experiment;
+pub mod goal;
 pub mod images;
 pub mod meta;
 pub mod metrics;
 pub mod ply;
+pub mod resolve;
 pub mod scenes;
+pub mod status;
+pub mod store;
+pub mod summary;

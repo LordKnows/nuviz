@@ -113,4 +113,4 @@ jobs:
 
       - name: Run integration tests
         working-directory: cli
-        run: cargo test --test integration_test --test hardening_test --test conformance_test
+        run: cargo test --test integration_test --test hardening_test --test conformance_test --test e2e_test

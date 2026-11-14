@@ -1,125 +1,74 @@
-use std::collections::HashMap;
+//! Mean / standard deviation across runs (multi-seed aggregation).
 
-use crate::data::experiment::Experiment;
-
-/// Aggregated metrics across multiple experiment runs (mean +/- std).
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct AggregatedMetrics {
-    pub mean: HashMap<String, f64>,
-    pub std: HashMap<String, f64>,
-    pub count: usize,
+/// Sample statistics over a set of runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stat {
+    pub mean: f64,
+    /// Sample standard deviation (n - 1); `0.0` for a single value.
+    pub std: f64,
+    pub n: usize,
 }
 
-/// Compute mean and standard deviation of best_metrics across experiments.
-#[allow(dead_code)]
-pub fn aggregate_experiments(experiments: &[&Experiment]) -> AggregatedMetrics {
-    let n = experiments.len();
+/// Mean and sample standard deviation of the finite values.
+pub fn mean_std(values: &[f64]) -> Option<Stat> {
+    let finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    let n = finite.len();
     if n == 0 {
-        return AggregatedMetrics {
-            mean: HashMap::new(),
-            std: HashMap::new(),
-            count: 0,
-        };
+        return None;
     }
+    let mean = finite.iter().sum::<f64>() / n as f64;
+    let std = if n > 1 {
+        (finite.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt()
+    } else {
+        0.0
+    };
+    Some(Stat { mean, std, n })
+}
 
-    // Collect all metric values per name
-    let mut values_by_metric: HashMap<String, Vec<f64>> = HashMap::new();
-    for exp in experiments {
-        for (name, &value) in &exp.best_metrics {
-            if value.is_finite() {
-                values_by_metric
-                    .entry(name.clone())
-                    .or_default()
-                    .push(value);
-            }
-        }
-    }
-
-    let mut mean = HashMap::new();
-    let mut std = HashMap::new();
-
-    for (name, values) in &values_by_metric {
-        let count = values.len() as f64;
-        let m = values.iter().sum::<f64>() / count;
-        mean.insert(name.clone(), m);
-
-        if values.len() > 1 {
-            let variance = values.iter().map(|v| (v - m).powi(2)).sum::<f64>() / (count - 1.0);
-            std.insert(name.clone(), variance.sqrt());
-        } else {
-            std.insert(name.clone(), 0.0);
-        }
-    }
-
-    AggregatedMetrics {
-        mean,
-        std,
-        count: n,
+/// Format as `mean±std`, or just the mean for a single run.
+pub fn format_stat(stat: &Stat, precision: usize) -> String {
+    if stat.n > 1 {
+        format!("{:.p$}±{:.p$}", stat.mean, stat.std, p = precision)
+    } else {
+        format!("{:.p$}", stat.mean, p = precision)
     }
 }
 
-/// Format a value as "mean +/- std" string.
-pub fn format_mean_std(mean: f64, std: f64) -> String {
-    if std.abs() < f64::EPSILON {
-        format!("{mean:.4}")
+/// LaTeX variant of [`format_stat`].
+pub fn format_stat_latex(stat: &Stat, precision: usize) -> String {
+    if stat.n > 1 {
+        format!("{:.p$} $\\pm$ {:.p$}", stat.mean, stat.std, p = precision)
     } else {
-        format!("{mean:.4}±{std:.4}")
+        format!("{:.p$}", stat.mean, p = precision)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn make_experiment(name: &str, metrics: &[(&str, f64)]) -> Experiment {
-        Experiment {
-            name: name.into(),
-            project: None,
-            dir: PathBuf::from("/tmp"),
-            status: "done".into(),
-            total_steps: Some(100),
-            best_metrics: metrics.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
-            start_time: None,
-            end_time: None,
-            seed: None,
-            config_hash: None,
-            config: None,
-            tags: Vec::new(),
-        }
+    #[test]
+    fn test_single_value() {
+        let s = mean_std(&[28.0]).unwrap();
+        assert_eq!((s.mean, s.std, s.n), (28.0, 0.0, 1));
+        assert_eq!(format_stat(&s, 4), "28.0000");
     }
 
     #[test]
-    fn test_aggregate_single() {
-        let exp = make_experiment("e1", &[("psnr", 28.0), ("loss", 0.05)]);
-        let result = aggregate_experiments(&[&exp]);
-        assert_eq!(result.count, 1);
-        assert!((result.mean["psnr"] - 28.0).abs() < f64::EPSILON);
-        assert!((result.std["psnr"]).abs() < f64::EPSILON);
+    fn test_multiple_values() {
+        let s = mean_std(&[28.0, 30.0, 29.0]).unwrap();
+        assert!((s.mean - 29.0).abs() < 1e-12);
+        assert!((s.std - 1.0).abs() < 1e-12);
+        assert_eq!(s.n, 3);
+        assert_eq!(format_stat(&s, 2), "29.00±1.00");
+        assert_eq!(format_stat_latex(&s, 1), "29.0 $\\pm$ 1.0");
     }
 
     #[test]
-    fn test_aggregate_multiple() {
-        let e1 = make_experiment("e1", &[("psnr", 28.0)]);
-        let e2 = make_experiment("e2", &[("psnr", 30.0)]);
-        let e3 = make_experiment("e3", &[("psnr", 29.0)]);
-        let result = aggregate_experiments(&[&e1, &e2, &e3]);
-        assert_eq!(result.count, 3);
-        assert!((result.mean["psnr"] - 29.0).abs() < f64::EPSILON);
-        assert!(result.std["psnr"] > 0.0);
-    }
-
-    #[test]
-    fn test_aggregate_empty() {
-        let result = aggregate_experiments(&[]);
-        assert_eq!(result.count, 0);
-        assert!(result.mean.is_empty());
-    }
-
-    #[test]
-    fn test_format_mean_std() {
-        assert_eq!(format_mean_std(28.0, 0.0), "28.0000");
-        assert_eq!(format_mean_std(28.5, 1.2), "28.5000±1.2000");
+    fn test_empty_and_non_finite() {
+        assert!(mean_std(&[]).is_none());
+        assert!(mean_std(&[f64::NAN]).is_none());
+        let s = mean_std(&[1.0, f64::NAN, 3.0]).unwrap();
+        assert_eq!((s.mean, s.n), (2.0, 2));
     }
 }

@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use crate::cli::WatchArgs;
 use crate::data::experiment::{discover_experiments, filter_by_project};
+use crate::data::resolve::resolve_many;
 use crate::tui::app::{App, Panel};
 use crate::tui::widgets::{self, BrailleChart};
 use crate::watcher::file_watcher;
@@ -135,36 +136,17 @@ fn run_event_loop(
 }
 
 fn resolve_experiments(args: &WatchArgs, base_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let all = discover_experiments(base_dir);
     if !args.experiments.is_empty() {
-        // Explicit experiment names
-        let mut dirs = Vec::new();
-        let all_experiments = discover_experiments(base_dir);
-
-        for name in &args.experiments {
-            if let Some(exp) = all_experiments.iter().find(|e| e.name == *name) {
-                dirs.push(exp.dir.clone());
-            } else {
-                // Try as a direct path under base_dir
-                let direct = base_dir.join(name);
-                if direct.exists() {
-                    dirs.push(direct);
-                } else {
-                    eprintln!("[nuviz] Warning: experiment '{name}' not found");
-                }
-            }
-        }
-        Ok(dirs)
-    } else {
-        // Use --project + --latest or default to latest 1
-        let mut experiments = discover_experiments(base_dir);
-
-        if let Some(ref project) = args.project {
-            experiments = filter_by_project(&experiments, project);
-        }
-
-        let n = args.latest.unwrap_or(1);
-        experiments.truncate(n);
-
-        Ok(experiments.into_iter().map(|e| e.dir).collect())
+        let found = resolve_many(&all, &args.experiments, args.project.as_deref())?;
+        return Ok(found.into_iter().map(|e| e.dir).collect());
     }
+
+    // Default: the most recent experiment(s), optionally within a project.
+    let mut experiments = match args.project {
+        Some(ref project) => filter_by_project(&all, project),
+        None => all,
+    };
+    experiments.truncate(args.latest.unwrap_or(1));
+    Ok(experiments.into_iter().map(|e| e.dir).collect())
 }

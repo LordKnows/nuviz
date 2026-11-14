@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use comfy_table::{Cell, Table};
 
 use crate::cli::ViewArgs;
-use crate::data::experiment::discover_experiments;
+use crate::commands::common::find_experiment;
 use crate::data::ply::{compute_ply_stats, PlyStats};
 
 pub fn run(args: ViewArgs, base_dir: &Path) -> Result<()> {
@@ -25,23 +25,12 @@ fn resolve_ply_path(path_str: &str, base_dir: &Path, project: Option<&str>) -> R
     let path = Path::new(path_str);
 
     // Direct file path
-    if path_str.contains('.') && path.exists() {
+    if path.is_file() {
         return Ok(path.to_path_buf());
     }
 
-    // Treat as experiment name — find latest PLY
-    let experiments = discover_experiments(base_dir);
-    let exp = experiments
-        .iter()
-        .find(|e| {
-            let name_match =
-                e.name == path_str || e.dir.file_name().and_then(|n| n.to_str()) == Some(path_str);
-            let project_match = project
-                .map(|p| e.project.as_deref() == Some(p))
-                .unwrap_or(true);
-            name_match && project_match
-        })
-        .ok_or_else(|| anyhow::anyhow!("Experiment '{}' not found", path_str))?;
+    // Treat as an experiment — find its latest PLY
+    let exp = find_experiment(base_dir, path_str, project)?;
 
     let pc_dir = exp.dir.join("pointclouds");
     if !pc_dir.is_dir() {

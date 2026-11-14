@@ -2,94 +2,84 @@ use anyhow::Result;
 use std::path::Path;
 
 use crate::cli::CleanupArgs;
-use crate::data::experiment::{discover_experiments, filter_by_project};
-use crate::data::metrics::{cmp_best_first, is_minimize_metric};
+use crate::commands::common::load_scope;
+use crate::data::experiment::Experiment;
+use crate::data::goal::{cmp_best_first, Goals};
+use crate::data::status::Status;
+use crate::data::summary::ValueMode;
 
 pub fn run(args: CleanupArgs, base_dir: &Path) -> Result<()> {
-    let experiments = discover_experiments(base_dir);
-
-    let mut targets = if let Some(ref project) = args.project {
-        filter_by_project(&experiments, project)
-    } else {
-        experiments
-    };
-
-    if targets.is_empty() {
+    let experiments = load_scope(base_dir, args.project.as_deref());
+    if experiments.is_empty() {
         println!("No experiments found.");
         return Ok(());
     }
 
-    let metric = args.metric.as_deref().unwrap_or("loss");
-    let keep = args.keep_top.unwrap_or(5);
+    let mut goals = Goals::default();
+    for exp in &experiments {
+        goals.merge(&exp.meta.metric_goals);
+    }
+    let goal = goals.get(&args.metric);
 
-    // Never touch experiments that are still running, and keep anything the
-    // user tagged unless they explicitly opt in.
-    let before = targets.len();
-    let mut protected_running = 0usize;
-    let mut protected_tagged = 0usize;
-    targets.retain(|exp| {
-        if exp.status == "running" {
-            protected_running += 1;
-            false
-        } else if !args.include_tagged && !exp.tags.is_empty() {
-            protected_tagged += 1;
-            false
-        } else {
-            true
-        }
+    let candidates: Vec<Candidate> = experiments
+        .into_iter()
+        .map(|exp| {
+            let value = exp
+                .summary()
+                .value(&args.metric, ValueMode::Best, goal)
+                .map(|(v, _)| v);
+            Candidate { exp, value }
+        })
+        .collect();
+    let plan = plan(candidates, args.keep_top, args.include_tagged, |a, b| {
+        cmp_best_first(a, b, goal)
     });
-    if protected_running + protected_tagged > 0 {
+
+    if plan.protected_running + plan.protected_tagged > 0 {
         println!(
-            "Protected {} of {} experiments ({} running, {} tagged).",
-            before - targets.len(),
-            before,
-            protected_running,
-            protected_tagged
+            "Protected: {} running, {} tagged (never removed{}).",
+            plan.protected_running,
+            plan.protected_tagged,
+            if args.include_tagged {
+                ""
+            } else {
+                "; pass --include-tagged to consider tagged runs"
+            }
         );
     }
 
-    // Best first; experiments without the metric rank last (removed first).
-    let minimize = is_minimize_metric(metric);
-    targets.sort_by(|a, b| {
-        cmp_best_first(
-            a.best_metrics.get(metric).copied(),
-            b.best_metrics.get(metric).copied(),
-            minimize,
-        )
-    });
-
-    if targets.len() <= keep {
+    if plan.remove.is_empty() {
         println!(
-            "Only {} removable experiments found, keeping all (threshold: {}).",
-            targets.len(),
-            keep
+            "Nothing to remove: {} removable experiment(s), keeping top {}.",
+            plan.keep.len(),
+            args.keep_top
         );
         return Ok(());
     }
 
-    let to_remove = &targets[keep..];
-
-    // Calculate sizes
     let mut total_bytes: u64 = 0;
     println!(
         "\nExperiments to remove (keeping top {} by {}):\n",
-        keep, metric
+        args.keep_top, args.metric
     );
-    println!("  {:<30} {:>12} {:>10}", "Name", metric, "Size");
-    println!("  {}", "-".repeat(56));
+    println!(
+        "  {:<34} {:>10} {:>12} {:>10}",
+        "Name", "Status", args.metric, "Size"
+    );
+    println!("  {}", "-".repeat(70));
 
-    for exp in to_remove {
-        let size = dir_size(&exp.dir);
+    for c in &plan.remove {
+        let size = dir_size(&c.exp.dir);
         total_bytes += size;
-        let metric_val = exp
-            .best_metrics
-            .get(metric)
-            .map(|v| format!("{:.4}", v))
+        let value = c
+            .value
+            .map(|v| format!("{v:.4}"))
             .unwrap_or_else(|| "N/A".into());
         println!(
-            "  {:<30} {:>12} {:>10}",
-            exp.name,
-            metric_val,
+            "  {:<34} {:>10} {:>12} {:>10}",
+            c.exp.qualified_name(),
+            c.exp.status,
+            value,
             format_size(size)
         );
     }
@@ -97,8 +87,8 @@ pub fn run(args: CleanupArgs, base_dir: &Path) -> Result<()> {
     println!("\n  Total reclaimable: {}", format_size(total_bytes));
     println!(
         "  Experiments to remove: {}/{}\n",
-        to_remove.len(),
-        targets.len()
+        plan.remove.len(),
+        plan.remove.len() + plan.keep.len()
     );
 
     if !args.force {
@@ -106,27 +96,81 @@ pub fn run(args: CleanupArgs, base_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // Actually delete
-    for exp in to_remove {
-        match std::fs::remove_dir_all(&exp.dir) {
-            Ok(()) => println!("  Deleted: {}", exp.name),
-            Err(e) => eprintln!("  Failed to delete {}: {}", exp.name, e),
+    let mut freed = 0u64;
+    for c in &plan.remove {
+        let size = dir_size(&c.exp.dir);
+        match std::fs::remove_dir_all(&c.exp.dir) {
+            Ok(()) => {
+                freed += size;
+                println!("  Deleted: {}", c.exp.qualified_name());
+            }
+            Err(e) => eprintln!("  Failed to delete {}: {e}", c.exp.qualified_name()),
         }
     }
 
-    println!("\nCleanup complete. Freed {}.", format_size(total_bytes));
+    println!("\nCleanup complete. Freed {}.", format_size(freed));
     Ok(())
+}
+
+pub struct Candidate {
+    pub exp: Experiment,
+    pub value: Option<f64>,
+}
+
+pub struct Plan {
+    pub keep: Vec<Candidate>,
+    pub remove: Vec<Candidate>,
+    pub protected_running: usize,
+    pub protected_tagged: usize,
+}
+
+/// Decide what to remove. Running experiments are never candidates; tagged
+/// ones only with `include_tagged`. Of the rest, the best `keep_top` by the
+/// metric are kept; runs without the metric rank last and go first.
+pub fn plan(
+    candidates: Vec<Candidate>,
+    keep_top: usize,
+    include_tagged: bool,
+    cmp: impl Fn(Option<f64>, Option<f64>) -> std::cmp::Ordering,
+) -> Plan {
+    let mut protected_running = 0;
+    let mut protected_tagged = 0;
+    let mut removable: Vec<Candidate> = Vec::new();
+
+    for c in candidates {
+        if c.exp.status == Status::Running {
+            protected_running += 1;
+        } else if !include_tagged && !c.exp.meta.tags.is_empty() {
+            protected_tagged += 1;
+        } else {
+            removable.push(c);
+        }
+    }
+
+    removable.sort_by(|a, b| {
+        cmp(a.value, b.value).then_with(|| a.exp.qualified_name().cmp(&b.exp.qualified_name()))
+    });
+    let remove = removable.split_off(keep_top.min(removable.len()));
+
+    Plan {
+        keep: removable,
+        remove,
+        protected_running,
+        protected_tagged,
+    }
 }
 
 fn dir_size(path: &Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_file() {
-                total += p.metadata().map(|m| m.len()).unwrap_or(0);
-            } else if p.is_dir() {
-                total += dir_size(&p);
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                total += dir_size(&entry.path());
+            } else if file_type.is_file() {
+                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
             }
         }
     }
@@ -134,13 +178,119 @@ fn dir_size(path: &Path) -> u64 {
 }
 
 fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} B")
+    } else if b < KB * KB {
+        format!("{:.1} KB", b / KB)
+    } else if b < KB * KB * KB {
+        format!("{:.1} MB", b / (KB * KB))
     } else {
-        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        format!("{:.1} GB", b / (KB * KB * KB))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::goal::Goal;
+    use crate::data::meta::ExperimentMeta;
+    use std::path::PathBuf;
+
+    fn candidate(name: &str, status: Status, tags: &[&str], value: Option<f64>) -> Candidate {
+        Candidate {
+            exp: Experiment {
+                name: name.into(),
+                dir_name: name.into(),
+                project: None,
+                dir: PathBuf::from(name),
+                status,
+                meta: ExperimentMeta {
+                    tags: tags.iter().map(|t| t.to_string()).collect(),
+                    ..Default::default()
+                },
+                started: None,
+                heartbeat_step: None,
+            },
+            value,
+        }
+    }
+
+    fn names(cs: &[Candidate]) -> Vec<&str> {
+        cs.iter().map(|c| c.exp.name.as_str()).collect()
+    }
+
+    fn by_loss(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
+        cmp_best_first(a, b, Goal::Min)
+    }
+
+    #[test]
+    fn test_keeps_best_and_removes_runs_without_metric_first() {
+        let plan = plan(
+            vec![
+                candidate("mid", Status::Done, &[], Some(0.3)),
+                candidate("none", Status::Crashed, &[], None),
+                candidate("best", Status::Done, &[], Some(0.1)),
+                candidate("worst", Status::Failed, &[], Some(0.9)),
+            ],
+            2,
+            false,
+            by_loss,
+        );
+        assert_eq!(names(&plan.keep), ["best", "mid"]);
+        assert_eq!(names(&plan.remove), ["worst", "none"]);
+    }
+
+    #[test]
+    fn test_running_is_never_removed_even_with_include_tagged() {
+        let plan = plan(
+            vec![
+                candidate("live", Status::Running, &[], None),
+                candidate("live_tagged", Status::Running, &["x"], Some(9.0)),
+                candidate("old", Status::Done, &[], Some(0.5)),
+            ],
+            0,
+            true,
+            by_loss,
+        );
+        assert_eq!(plan.protected_running, 2);
+        assert_eq!(names(&plan.remove), ["old"]);
+    }
+
+    #[test]
+    fn test_tagged_kept_unless_included() {
+        let make = || {
+            vec![
+                candidate("tagged", Status::Done, &["paper"], Some(0.9)),
+                candidate("plain", Status::Done, &[], Some(0.1)),
+            ]
+        };
+        let plan_default = plan(make(), 0, false, by_loss);
+        assert_eq!(plan_default.protected_tagged, 1);
+        assert_eq!(names(&plan_default.remove), ["plain"]);
+
+        let plan_all = plan(make(), 0, true, by_loss);
+        assert_eq!(plan_all.protected_tagged, 0);
+        assert_eq!(names(&plan_all.remove), ["plain", "tagged"]);
+    }
+
+    #[test]
+    fn test_keep_more_than_available() {
+        let plan = plan(
+            vec![candidate("only", Status::Done, &[], Some(0.1))],
+            5,
+            false,
+            by_loss,
+        );
+        assert!(plan.remove.is_empty());
+        assert_eq!(names(&plan.keep), ["only"]);
+    }
+
+    #[test]
+    fn test_format_size() {
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(2048), "2.0 KB");
+        assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
     }
 }

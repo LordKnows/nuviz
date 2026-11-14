@@ -1,15 +1,8 @@
-mod cli;
-mod commands;
-mod data;
-mod output;
-mod terminal;
-mod tui;
-mod watcher;
-
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Commands};
+use nuviz_cli::cli::{Cli, Commands};
+use nuviz_cli::{commands, data};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();

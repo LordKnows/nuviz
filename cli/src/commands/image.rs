@@ -6,27 +6,13 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use crossterm::terminal;
 
 use crate::cli::ImageArgs;
-use crate::data::experiment::discover_experiments;
+use crate::commands::common::find_experiment;
 use crate::data::images::{discover_images, find_latest_image, ImageEntry};
 use crate::terminal::capability::detect_capabilities;
 use crate::terminal::render;
 
 pub fn run(args: ImageArgs, base_dir: &Path) -> Result<()> {
-    let experiments = discover_experiments(base_dir);
-    let exp = experiments
-        .iter()
-        .find(|e| {
-            e.name == args.experiment
-                || e.dir.file_name().and_then(|n| n.to_str()) == Some(&args.experiment)
-        })
-        .ok_or_else(|| anyhow::anyhow!("Experiment '{}' not found", args.experiment))?;
-
-    // Filter by project if specified
-    if let Some(ref proj) = args.project {
-        if exp.project.as_deref() != Some(proj) {
-            bail!("Experiment '{}' not in project '{}'", args.experiment, proj);
-        }
-    }
+    let exp = find_experiment(base_dir, &args.experiment, args.project.as_deref())?;
 
     let caps = detect_capabilities();
 

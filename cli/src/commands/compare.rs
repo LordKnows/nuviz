@@ -19,6 +19,7 @@ use std::time::Duration;
 use crate::cli::CompareArgs;
 use crate::data::experiment::{discover_experiments, filter_by_project};
 use crate::data::metrics::{self, AlignMode, MetricRecord};
+use crate::data::resolve::resolve_many;
 use crate::tui::chart::{self, BrailleCanvas};
 use crate::watcher::file_watcher;
 
@@ -123,9 +124,9 @@ pub fn run(args: CompareArgs, base_dir: &Path) -> Result<()> {
         })
         .collect();
 
-    let align_mode = match args.align.as_str() {
-        "wall_time" => AlignMode::WallTime,
-        _ => AlignMode::Step,
+    let align_mode = match args.align {
+        crate::cli::Align::WallTime => AlignMode::WallTime,
+        crate::cli::Align::Step => AlignMode::Step,
     };
 
     let mut app = CompareApp::new(experiment_names.clone(), align_mode);
@@ -385,27 +386,15 @@ fn render_legend(frame: &mut ratatui::Frame, app: &CompareApp, area: ratatui::la
 }
 
 fn resolve_experiments(args: &CompareArgs, base_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let all = discover_experiments(base_dir);
     if !args.experiments.is_empty() {
-        let mut dirs = Vec::new();
-        let all_experiments = discover_experiments(base_dir);
-
-        for name in &args.experiments {
-            if let Some(exp) = all_experiments.iter().find(|e| e.name == *name) {
-                dirs.push(exp.dir.clone());
-            } else {
-                let direct = base_dir.join(name);
-                if direct.exists() {
-                    dirs.push(direct);
-                } else {
-                    eprintln!("[nuviz] Warning: experiment '{name}' not found");
-                }
-            }
-        }
-        Ok(dirs)
+        let found = resolve_many(&all, &args.experiments, args.project.as_deref())?;
+        Ok(found.into_iter().map(|e| e.dir).collect())
     } else if let Some(ref project) = args.project {
-        let experiments = discover_experiments(base_dir);
-        let filtered = filter_by_project(&experiments, project);
-        Ok(filtered.into_iter().map(|e| e.dir).collect())
+        Ok(filter_by_project(&all, project)
+            .into_iter()
+            .map(|e| e.dir)
+            .collect())
     } else {
         anyhow::bail!("Specify experiment names or use --project to compare all in a project");
     }
