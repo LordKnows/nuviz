@@ -324,3 +324,15 @@ with Logger("nonumpy", config=cfg) as log:
         assert result.returncode == 0, result.stderr
         assert "numpy is required" in result.stderr
         assert (tmp_path / "nonumpy" / "metrics.jsonl").exists()
+
+
+class TestSpikeAlertsThroughLogger:
+    def test_declared_max_metric_raises_drop_alert_lr_does_not(self, tmp_path: Path) -> None:
+        with Logger("spikes", config=_config(tmp_path)) as log:
+            log.define_metric("psnr", "max")
+            for step in range(40):
+                log.step(step, psnr=30.0 + 0.01 * (step % 2), lr=1e-3 * 0.1 ** (step // 10))
+            log.step(40, psnr=4.0, lr=1e-7)
+        alerts = [(e["metric"], e["alert_type"]) for e in _events(log) if e["type"] == "alert"]
+        assert alerts == [("psnr", "spike")]
+        assert "drop" in log.alerts[0].message

@@ -233,7 +233,11 @@ class Logger:
             )
 
         # Initialize anomaly detector
-        self._detector = AnomalyDetector() if alerts and self._config.enable_alerts else None
+        self._detector = (
+            AnomalyDetector(goal_for=self._spike_goal)
+            if alerts and self._config.enable_alerts
+            else None
+        )
 
         # Environment snapshot runs in the background: git, nvcc and
         # nvidia-smi can each take seconds and must not delay training.
@@ -528,6 +532,18 @@ class Logger:
         return _config_hash(
             {k: v for k, v in hparams.items() if k != "seed" and not k.startswith("_")}
         )
+
+    def _spike_goal(self, name: str) -> Goal | None:
+        """Which direction counts as a regression for spike alerts.
+
+        Declared goals are trusted in both directions. Otherwise only
+        loss-like metrics are watched: a name the heuristic calls "max" may
+        just be a schedule (learning rate, epoch) rather than a quality score.
+        """
+        declared = self._goals.get(name)
+        if declared is not None:
+            return declared
+        return "min" if default_goal(name) == "min" else None
 
     def _relative(self, path: Path) -> str:
         try:
